@@ -110,13 +110,21 @@ if [[ $RUN_LOCALLY == "y" || $RUN_LOCALLY == "Y" ]]; then
   fi
 
   echo "Exécution de l'image localement avec le nom de conteneur: ${CONTAINER_NAME}..."
-  # Exposer le port 3000
-  docker run -d -p 7090:7090 --name ${CONTAINER_NAME} --network devoups-agent-network ${IMAGE_NAME}:${TAG} 
+  # Exposer le port 7081 et utiliser un format lisible avec retour à la ligne
+  docker run -d \
+    --restart unless-stopped \
+    --privileged \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -e AGENT_TOKEN="kCYDJLUfDY1g8i1mVmOoxy" \
+    -e AGENT_HOSTNAME="vps-sandbox" \
+    -p 7081:7081 \
+    --name ${CONTAINER_NAME} \
+    ${IMAGE_NAME}:${TAG}
 
   if [ $? -ne 0 ]; then
     echo "Échec du lancement du conteneur Docker."
   else
-    echo "Conteneur ${CONTAINER_NAME} lancé avec succès sur le port 7090."
+    echo "Conteneur ${CONTAINER_NAME} lancé avec succès sur le port 7081."
     echo "Pour voir les logs: docker logs ${CONTAINER_NAME}"
     echo "Pour arrêter le conteneur: docker stop ${CONTAINER_NAME}"
     echo "Pour supprimer le conteneur: docker rm ${CONTAINER_NAME}"
