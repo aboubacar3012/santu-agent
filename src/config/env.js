@@ -22,7 +22,7 @@ dotenv.config();
  * Liste des variables indispensables au démarrage. On garde cette liste proche
  * de la logique pour qu'un ajout/ suppression se fasse en une seule modification.
  */
-const REQUIRED_KEYS = ["AGENT_TOKEN", "AGENT_HOSTNAME"];
+const REQUIRED_KEYS = []; // "AGENT_TOKEN", "AGENT_HOSTNAME"
 
 /**
  * Charge et valide la configuration.
