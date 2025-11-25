@@ -1,5 +1,11 @@
 /**
- * Exécution sécurisée de commandes système
+ * Exécution sécurisée de commandes shell.
+ *
+ * Abstraction ultra-simple sur `child_process.exec` pour :
+ * - appliquer un timeout et une taille de buffer raisonnables,
+ * - retourner une signature cohérente (stdout/stderr/error),
+ * - masquer les détails d'implémentation aux modules appelants.
+ *
  * @module utils/executor
  */
 

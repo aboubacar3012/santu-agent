@@ -1,5 +1,10 @@
 /**
- * Logger structuré pour l'agent 
+ * Logger structuré pour l'agent.
+ *
+ * Ce mini-wrapper permet d'unifier le format des logs et de contrôler le niveau
+ * d'affichage sans dépendre d'une lib externe. Les messages respectent tous
+ * le schéma : `[timestamp] [LEVEL] message {meta}`.
+ *
  * @module utils/logger
  */
 
@@ -10,6 +15,10 @@ const LOG_LEVELS = {
   debug: 3,
 };
 
+/**
+ * Niveau courant calculé à partir de la config.
+ * On retombe sur `info` si la valeur fournie n'existe pas.
+ */
 const currentLogLevel =
   LOG_LEVELS[process.env.AGENT_LOG_LEVEL || "info"] || LOG_LEVELS.info;
 

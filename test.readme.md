@@ -47,7 +47,7 @@ Tu dois voir dans les logs :
 ### Connexion
 
 ```bash
-wscat -c "ws://127.0.0.1:7081?token=your-agent-token&serverId=local-test"
+wscat -c "ws://127.0.0.1:7081?token=kCYDJLUfDY1g8i1mVmOoxy&serverId=vps-sandbox"
 ```
 
 En cas d’erreur `Invalid token`, vérifie `AGENT_CLIENT_TOKEN`.

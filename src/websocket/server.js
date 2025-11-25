@@ -5,7 +5,14 @@ import { handleMessage } from "./handlers.js";
 import { createError } from "../types/messages.js";
 
 /**
- * Crée et démarre le serveur WebSocket frontal
+ * Serveur WebSocket frontend.
+ *
+ * Ce module encapsule la création du serveur HTTP + WebSocket et gère :
+ * - l'authentification via query string (token),
+ * - l'isolation des connexions (cleanup des streams par client),
+ * - la délégation des messages à `handleMessage`,
+ * - l'arrêt propre (terminaison des clients, fermeture du serveur HTTP).
+ *
  * @param {Object} options - Options de configuration
  * @param {number} options.port - Port d'écoute
  * @param {string} options.host - Interface réseau d'écoute
@@ -34,12 +41,13 @@ export function createFrontendServer({ port, host, token }) {
     }
 
     const clientToken = connectionUrl.searchParams.get("token");
-    const requestedServerId = connectionUrl.searchParams.get("serverId") || null;
+    const requestedServerHostname =
+      connectionUrl.searchParams.get("hostname") || null;
 
     if (token && clientToken !== token) {
       logger.warn("Tentative de connexion avec un token invalide", {
         remoteAddress: req.socket.remoteAddress,
-        requestedServerId,
+        requestedServerHostname,
       });
       ws.close(1008, "Invalid token");
       return;
@@ -49,7 +57,7 @@ export function createFrontendServer({ port, host, token }) {
 
     logger.info("Client frontend connecté", {
       remoteAddress,
-      requestedServerId,
+      requestedServerHostname,
     });
 
     const activeResources = new Map();
@@ -121,7 +129,9 @@ export function createFrontendServer({ port, host, token }) {
         });
         if (ws.readyState === ws.OPEN) {
           ws.send(
-            JSON.stringify(createError("unknown", "Identifiant de requête manquant"))
+            JSON.stringify(
+              createError("unknown", "Identifiant de requête manquant")
+            )
           );
         }
         return;
@@ -158,7 +168,7 @@ export function createFrontendServer({ port, host, token }) {
       cleanupResources();
       logger.info("Client frontend déconnecté", {
         remoteAddress,
-        requestedServerId,
+        requestedServerHostname,
       });
     });
 
@@ -166,7 +176,7 @@ export function createFrontendServer({ port, host, token }) {
       logger.error("Erreur WebSocket côté frontend", {
         error: error.message,
         remoteAddress,
-        requestedServerId,
+        requestedServerHostname,
       });
       cleanupResources();
     });

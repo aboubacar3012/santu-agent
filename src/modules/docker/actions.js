@@ -1,5 +1,17 @@
 /**
- * Actions Docker pour l'agent 
+ * Actions Docker pour l'agent.
+ *
+ * Cette couche encapsule toutes les opérations autorisées sur Docker afin de :
+ * - centraliser la validation/sanitization des paramètres,
+ * - unifier la journalisation,
+ * - fournir des réponses formatées prêtes à être envoyées via WebSocket.
+ *
+ * Chaque fonction suit la même structure :
+ * 1. Récupérer l'instance Docker partagée (via `getDocker`).
+ * 2. Valider les paramètres grâce au validator.
+ * 3. Appeler l'API Dockerode correspondante.
+ * 4. Logger les erreurs/succès pour faciliter le troubleshooting.
+ *
  * @module modules/docker/actions
  */
 

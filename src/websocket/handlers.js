@@ -1,5 +1,12 @@
 /**
- * Gestionnaires de messages WebSocket pour l'agent 
+ * Gestionnaires de messages WebSocket.
+ *
+ * `handleMessage` agit comme routeur central :
+ * 1. Valide le format du message (présence d'ID/action).
+ * 2. Vérifie que l'action appartient au module `docker` et est autorisée.
+ * 3. Exécute l'action correspondante dans `modules/docker`.
+ * 4. Enregistre/relâche les ressources longues (streams logs/stats).
+ *
  * @module websocket/handlers
  */
 

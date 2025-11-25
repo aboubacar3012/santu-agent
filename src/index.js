@@ -1,5 +1,12 @@
 /**
- * Point d'entrée principal de l'agent 
+ * Point d'entrée principal de l'agent.
+ *
+ * Responsabilités :
+ * - Charger la configuration et la consigner dans les logs.
+ * - Initialiser la connexion Docker.
+ * - Démarrer le serveur WebSocket frontend.
+ * - Gérer l'arrêt propre (SIGINT/SIGTERM) et les erreurs globales.
+ *
  * @module index
  */
 
@@ -9,20 +16,20 @@ import { createFrontendServer } from "./websocket/server.js";
 import { initDocker } from "./modules/docker/manager.js";
 
 /**
- * Fonction principale
+ * Fonction principale orchestrant le cycle de vie de l'agent.
  */
 async function main() {
   try {
-    // Charger la configuration
+    // 1. Charger la configuration validée.
     const config = loadConfig();
     logger.info("Démarrage de l'agent ", {
       hostname: config.hostname,
     });
 
-    // Initialiser Docker
+    // 2. Initialiser Docker une fois pour toutes (lazy singleton).
     initDocker(config.dockerSocketPath);
 
-    // Démarrer le serveur WebSocket pour les connexions frontend
+    // 3. Démarrer le serveur WebSocket pour les connexions frontend.
     const frontendServer = createFrontendServer({
       port: config.frontendPort,
       host: config.frontendHost,
@@ -48,7 +55,7 @@ async function main() {
       }
     };
 
-    // Gérer l'arrêt propre
+    // 4. Gestion des signaux d'arrêt.
     process.on("SIGTERM", () => {
       gracefulShutdown("SIGTERM")
         .then(() => process.exit(0))
@@ -70,7 +77,7 @@ async function main() {
         });
     });
 
-    // Gérer les erreurs non capturées
+    // 5. Dernier filet de sécurité (exceptions/rejets).
     process.on("uncaughtException", (error) => {
       logger.error("Exception non capturée", { error: error.message });
       gracefulShutdown("uncaughtException").finally(() => process.exit(1));
@@ -90,6 +97,6 @@ async function main() {
   }
 }
 
-// Démarrer l'agent
+// Lancer l'agent immédiatement.
 main();
 

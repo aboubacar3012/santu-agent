@@ -1,5 +1,9 @@
 /**
- * Validation et sanitization des commandes et paramètres
+ * Validation et sanitization des commandes reçues via WebSocket.
+ *
+ * Ce module concentre toutes les règles de sécurité applicables aux actions
+ * Docker afin d'éviter la duplication de logique dans les handlers.
+ *
  * @module utils/validator
  */
 

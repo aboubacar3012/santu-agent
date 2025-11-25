@@ -1,5 +1,10 @@
 /**
- * Types de messages WebSocket pour la communication frontend ↔ agent
+ * Types/utilitaires pour les messages WebSocket frontend ↔ agent.
+ *
+ * Tout message qui circule transite par ces helpers afin de garantir
+ * un format homogène et facilement sérialisable. Cela simplifie l'ajout de
+ * nouveaux types (streams, erreurs, etc.) et centralise la documentation.
+ *
  * @module types/messages
  */
 

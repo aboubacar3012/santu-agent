@@ -1,0 +1,193 @@
+name: Développement
+
+# Ce workflow se déclenche manuellement uniquement
+on:
+  # Déclenche le workflow manuellement depuis l'interface GitHub
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Raison du déploiement"
+        required: false
+        default: "Déploiement manuel"
+
+# Variables d'environnement utilisées dans le workflow
+# Ces variables sont partagées par tous les jobs du workflow
+env:
+  REGISTRY: ghcr.io # GitHub Container Registry - où sont stockées nos images Docker
+  IMAGE_NAME: ${{ github.repository }} # Nom du repository GitHub (ex: elyamajeorg/elyamajeplay-backend)
+
+# ================================================================================================
+# JOBS DE CONSTRUCTION (BUILD) - Ces jobs créent les images Docker
+# ================================================================================================
+
+jobs:
+  # Job 1: Construction de l'image Devoups Agent
+  # Ce job créé une image Docker contenant notre application Node.js
+  build-devoups-agent:
+    # Condition : Ce job s'exécute lors d'un déclenchement manuel
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: read
+
+    steps:
+      # Étape 1: Télécharger le code source
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Étape 2: Supprimer l'ancien fichier .env s'il existe
+      # Le fichier .env contient les variables d'environnement de l'application
+      # - name: Clean old .env file
+      #   run: rm -f .env
+
+      # Étape 3: Créer le fichier .env avec toutes les variables d'environnement
+      # Ces variables configurent l'application (base de données, services externes, etc.)
+      # - name: Create .env file
+      #   run: |
+      #     set -euo pipefail
+
+      #      RESPONSE_FILE=$(mktemp)
+      #      HTTP_STATUS=$(curl --silent --show-error --fail \
+      #        --get \
+      #        --data-urlencode "site_url=${{ vars.SITE_URL }}" \
+      #        --data-urlencode "client_id=${{ vars.CLIENT_ID }}" \
+      #        --data-urlencode "client_secret=${{ vars.CLIENT_SECRET }}" \
+      #        --data-urlencode "project_id=${{ vars.PROJECT_ID }}" \
+      #        --data-urlencode "env=dev" \
+      #        --write-out "%{http_code}" \
+      #        --output "$RESPONSE_FILE" \
+      #        https://env-5.elyamaje.com/getEnvVariables || true)
+
+      #      HTTP_STATUS=${HTTP_STATUS:-0}
+
+      #      if [[ "$HTTP_STATUS" -ne 200 || ! -s "$RESPONSE_FILE" ]]; then
+      #        echo "::error::Échec de la récupération des variables (HTTP ${HTTP_STATUS:-unknown})"
+      #        echo "Réponse brute :"
+      #        cat "$RESPONSE_FILE" 2>/dev/null || echo "<aucune réponse>"
+      #        exit 1
+      #      fi
+
+      #      jq -e '.secrets and (.secrets | type == "array")' "$RESPONSE_FILE" > /dev/null
+      #      jq -r '.secrets[] | "\(.key)=\(.value)"' "$RESPONSE_FILE" > .env
+
+      # Étape 4: Afficher le contenu du fichier .env pour débugger
+      # Cela nous permet de vérifier que toutes les variables sont bien définies
+      # - name: Debug .env
+      #   run: |
+      #     echo "------ Contenu de .env ------"
+      #     cat .env
+      #     echo "----------------------------------------"
+
+      # Étape 5: Se connecter au registre Docker
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.PAT_GITHUB_TOKEN }}
+
+      # Étape 6: Rendre le script de construction Devoups Agent exécutable
+      - name: Make Devoups Agent script executable
+        run: chmod +x build-agent-image.sh
+
+      # Étape 7: Construire et publier l'image Devoups Agent
+      - name: Build Devoups Agent image
+        run: |
+          # Réponses automatiques au script :
+          # - 'n' : Ne pas exécuter l'image localement
+          # - 'y' : Publier l'image sur GitHub Container Registry
+          echo -e "n\ny" | ./build-agent-image.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ================================================================================================
+  # JOBS DE DÉPLOIEMENT (DEPLOY) - Ces jobs déploient les conteneurs sur le serveur
+  # ===============================================================================================
+
+  # Job 4: Déploiement du conteneur Devoups Agent
+  # Ce job prend l'image Devoups Agent créée et la déploie sur le serveur develop
+  deploy-devoups-agent:
+    # Condition : Ce job s'exécute lors d'un déclenchement manuel
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    needs: [build-devoups-agent] # Ce job attend que build-devoups-agent soit terminé
+
+    steps:
+      # Étape unique : Se connecter au serveur et déployer le Devoups Agent
+      - name: "Déploiement Devoups Agent sur le serveur de develop"
+        # Cette étape s'exécute si le job build-devoups a réussi
+        if: needs.build-devoups-agent.result == 'success'
+        shell: bash
+        run: |
+          # Arrêter le script en cas d'erreur
+          set -e
+
+          # Créer le dossier SSH et configurer la clé privée
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          # Se connecter au serveur develop via SSH et exécuter les commandes de déploiement
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key -p 53796 ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST_DEV }} << 'EOF'
+            echo "Authentification à GitHub Container Registry..."
+            # Se connecter au registre Docker de GitHub sur le serveur
+            echo "${{ secrets.PAT_GITHUB_TOKEN }}" |  docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            
+            echo "Arrêt et suppression du conteneur Devoups Agent existant s'il existe..."
+            # Arrêter le conteneur Devoups Agent s'il tourne déjà
+             docker stop devoups-agent || true
+            # Supprimer le conteneur Devoups Agent s'il existe
+             docker rm devoups-agent || true
+            # Supprimer l'ancienne image Devoups Agent pour économiser l'espace
+             docker rmi ghcr.io/elyamajeorg/devoups-agent:latest || true
+            
+            echo "Récupération de l'image Devoups Agent..."
+            # Télécharger la dernière version de l'image Devoups Agent
+            docker pull ghcr.io/elyamajeorg/devoups-agent:latest
+            
+            echo "Démarrage du conteneur Devoups Agent..."
+            # Démarrer le conteneur sur le réseau bridge (par défaut) puis le connecter au réseau personnalisé
+            docker run -d --name devoups-agent -p 7081:7081 ghcr.io/elyamajeorg/devoups-agent:latest
+
+            echo "Vérification du statut du conteneur Devoups Agent..."
+            # Vérifier que le conteneur Devoups Agent fonctionne correctement
+             docker ps | grep devoups-agent
+          EOF
+          echo "Déploiement Devoups Agent terminé"
+
+      # Étape finale : Message de succès
+      - name: "Fin du workflow de déploiement Devoups Agent"
+        run: echo "Déploiement Devoups Agent terminé avec succès."
+        if: success()
+
+  # Job 5: Vérification du conteneur Devoups Agent
+  verify-devoups-container:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    needs: [deploy-devoups-agent]
+    steps:
+      - name: "Vérification du conteneur Docker sur le serveur de develop (Devoups Agent)"
+        shell: bash
+        run: |
+          set -e
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key -p 53796 ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST_DEV }} << 'EOF'
+              echo "Vérification du statut du conteneur Devoups Agent..."
+            for i in {1..5}; do
+              if docker ps | grep devoups-agent && curl --fail http://localhost:7081; then
+                echo "Le conteneur Devoups Agent est en cours d'exécution."
+                exit 0
+              fi
+              echo "Attente du démarrage du conteneur Devoups Agent... ($i/5)"
+              sleep 5
+            done
+            echo "Échec de la vérification du conteneur Devoups Agent."
+            docker logs devoups-agent
+            exit 1
+          EOF
+          echo "Vérification du conteneur Devoups Agent terminée"
+        continue-on-error: false
