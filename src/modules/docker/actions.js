@@ -1,5 +1,5 @@
 /**
- * Actions Docker pour l'agent DevOUPS
+ * Actions Docker pour l'agent 
  * @module modules/docker/actions
  */
 

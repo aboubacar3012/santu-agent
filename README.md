@@ -1,4 +1,4 @@
-# DevOUPS Agent
+#  Agent
 
 Agent léger pour la gestion des conteneurs Docker sur les serveurs distants via WebSocket.
 
@@ -7,11 +7,7 @@ Agent léger pour la gestion des conteneurs Docker sur les serveurs distants via
 - **Gestion Docker** : Liste, démarrage, arrêt, redémarrage de conteneurs
 - **Logs en temps réel** : Récupération et streaming des logs Docker
 - **Statistiques** : Monitoring des performances des conteneurs
-- **Communication WebSocket** : 
-  - Serveur WebSocket pour connexions frontend directes
-  - Client WebSocket optionnel pour connexion au backend centralisé
-  - Reconnexion automatique
-- **Heartbeat** : Envoi périodique de l'état du serveur (mode backend)
+- **Communication WebSocket** : Serveur WebSocket pour connexions frontend directes
 - **Sécurité** : Validation des commandes, sanitization des paramètres, authentification par token
 
 ## 📋 Prérequis
@@ -37,27 +33,20 @@ cp .env.example .env
 Variables d'environnement (`.env`) :
 
 ```env
-# Backend WebSocket URL (optionnel en mode autonome)
-# AGENT_BACKEND_URL=wss://api.devoups.io/agent/connect
-
-# Authentification (backend + frontend par défaut)
-AGENT_TOKEN=your-jwt-token-here
+# Authentification (utilisée côté agent et par défaut côté frontend)
+AGENT_TOKEN=your-agent-token
 
 # Jeton dédié pour les clients frontend (optionnel)
 # AGENT_CLIENT_TOKEN=your-frontend-token
 
 # Identification du serveur
 AGENT_HOSTNAME=server-01
-AGENT_SERVER_ID=uuid-from-database
 
 # Serveur WebSocket Frontend
 AGENT_FRONTEND_HOST=0.0.0.0
 AGENT_FRONTEND_PORT=7080
 
-# Configuration
-AGENT_HEARTBEAT_INTERVAL=30000
-AGENT_RECONNECT_DELAY=5000
-AGENT_RECONNECT_MAX_DELAY=60000
+# Logs
 AGENT_LOG_LEVEL=info
 ```
 
@@ -90,17 +79,6 @@ docker run -d \
   -e AGENT_HOSTNAME=server-01 \
   -e AGENT_FRONTEND_PORT=7080 \
   devoups-agent:latest
-
-# Ou avec connexion au backend centralisé (optionnel)
-docker run -d \
-  --name devoups-agent \
-  -v /var/run/docker.sock:/var/run/docker.sock:ro \
-  -p 7080:7080 \
-  -e AGENT_BACKEND_URL=wss://api.devoups.io/agent/connect \
-  -e AGENT_TOKEN=your-token \
-  -e AGENT_HOSTNAME=server-01 \
-  -e AGENT_FRONTEND_PORT=7080 \
-  devoups-agent:latest
 ```
 
 ### Avec Docker Compose
@@ -113,9 +91,9 @@ docker-compose up -d
 
 ## 📡 Protocole de communication
 
-L'agent accepte les mêmes messages depuis le frontend (via le serveur WebSocket) ou depuis le backend (via le client WebSocket).
+L'agent accepte les messages envoyés par le frontend via le serveur WebSocket exposé.
 
-### Messages reçus (frontend ou backend)
+### Messages reçus (frontend)
 
 ```json
 {
@@ -147,7 +125,7 @@ L'agent accepte les mêmes messages depuis le frontend (via le serveur WebSocket
 }
 ```
 
-### Messages envoyés (vers frontend ou backend)
+### Messages envoyés (vers frontend)
 
 **Réponse de succès :**
 ```json
@@ -166,16 +144,6 @@ L'agent accepte les mêmes messages depuis le frontend (via le serveur WebSocket
   "id": "uuid-request",
   "stream": "stdout",
   "data": "Container started successfully"
-}
-```
-
-**Heartbeat :**
-```json
-{
-  "type": "heartbeat",
-  "hostname": "server-01",
-  "status": "online",
-  "timestamp": "2024-01-01T00:00:00Z"
 }
 ```
 
@@ -199,7 +167,6 @@ devoups-agent/
 │   ├── config/
 │   │   └── env.js               # Configuration
 │   ├── websocket/
-│   │   ├── client.js            # Client WebSocket (backend)
 │   │   ├── server.js            # Serveur WebSocket (frontend)
 │   │   └── handlers.js          # Gestionnaires de messages
 │   ├── modules/
@@ -219,26 +186,17 @@ devoups-agent/
 
 ### Architecture de communication
 
-L'agent peut fonctionner en deux modes :
-
-**Mode autonome (recommandé) :**
 ```
 Frontend → WebSocket (port 7080) → Agent → Docker
-```
-
-**Mode avec backend centralisé :**
-```
-Frontend → WebSocket (port 7080) → Agent → Docker
-Backend → WebSocket (wss://...) → Agent → Docker
+         ← WebSocket ← Agent ← Docker
 ```
 
 ## 🔒 Sécurité
 
 - Validation de toutes les actions Docker (liste blanche)
 - Sanitization des noms de conteneurs
-- Authentification via token JWT (backend) et token côté frontend (`token` dans l'URL)
+- Authentification via token JWT (`token` dans l'URL)
 - Serveur WebSocket authentifié exposé sur `AGENT_FRONTEND_PORT`
-- Communication sortante vers le backend (optionnelle) pour la supervision centrale
 - Exécution en utilisateur non-root dans le conteneur
 
 ## 📝 Logs

@@ -24,35 +24,16 @@ export function loadConfig() {
     );
   }
 
-  const backendUrl = process.env.AGENT_BACKEND_URL || null;
   const clientToken =
     process.env.AGENT_CLIENT_TOKEN || process.env.AGENT_TOKEN || null;
 
   return {
-    backendUrl,
     token: process.env.AGENT_TOKEN,
     clientToken,
     hostname: process.env.AGENT_HOSTNAME,
-    serverId: process.env.AGENT_SERVER_ID || null,
-    heartbeatInterval: parseInt(
-      process.env.AGENT_HEARTBEAT_INTERVAL || "30000",
-      10
-    ),
-    reconnectDelay: parseInt(
-      process.env.AGENT_RECONNECT_DELAY || "5000",
-      10
-    ),
-    reconnectMaxDelay: parseInt(
-      process.env.AGENT_RECONNECT_MAX_DELAY || "60000",
-      10
-    ),
     logLevel: process.env.AGENT_LOG_LEVEL || "info",
-    dockerSocketPath:
-      process.env.DOCKER_SOCKET_PATH || "/var/run/docker.sock",
-    frontendPort: parseInt(
-      process.env.AGENT_FRONTEND_PORT || "7080",
-      10
-    ),
+    dockerSocketPath: process.env.DOCKER_SOCKET_PATH || "/var/run/docker.sock",
+    frontendPort: parseInt(process.env.AGENT_FRONTEND_PORT || "7081", 10),
     frontendHost: process.env.AGENT_FRONTEND_HOST || "0.0.0.0",
   };
 }

@@ -1,10 +1,10 @@
 /**
- * Types de messages WebSocket pour la communication agent ↔ backend
+ * Types de messages WebSocket pour la communication frontend ↔ agent
  * @module types/messages
  */
 
 /**
- * Message envoyé par le backend vers l'agent
+ * Message envoyé par le frontend vers l'agent
  * @typedef {Object} BackendMessage
  * @property {string} id - ID unique de la requête
  * @property {string} action - Action à exécuter (ex: "docker.list")
@@ -12,9 +12,9 @@
  */
 
 /**
- * Message de réponse envoyé par l'agent vers le backend
+ * Message de réponse envoyé par l'agent vers le frontend
  * @typedef {Object} AgentResponse
- * @property {string} type - Type de message ("response" | "stream" | "error" | "heartbeat")
+ * @property {string} type - Type de message ("response" | "stream" | "error")
  * @property {string} id - ID de la requête originale
  * @property {boolean} [success] - Succès de l'opération
  * @property {*} [data] - Données de réponse
@@ -68,22 +68,6 @@ export function createError(id, error) {
     id,
     success: false,
     error,
-  };
-}
-
-/**
- * Crée un message de heartbeat
- * @param {string} hostname - Hostname du serveur
- * @param {string} [serverId] - ID du serveur
- * @returns {AgentResponse} Message formaté
- */
-export function createHeartbeat(hostname, serverId = null) {
-  return {
-    type: "heartbeat",
-    hostname,
-    ...(serverId && { serverId }),
-    status: "online",
-    timestamp: new Date().toISOString(),
   };
 }
 

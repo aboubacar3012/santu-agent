@@ -1,7 +1,7 @@
 {
   "name": "devoups-agent",
   "version": "1.0.0",
-  "description": "Agent DevOUPS pour la gestion des conteneurs Docker sur les serveurs distants",
+  "description": "Agent  pour la gestion des conteneurs Docker sur les serveurs distants",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

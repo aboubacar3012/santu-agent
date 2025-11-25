@@ -1,5 +1,5 @@
 /**
- * Gestionnaire Docker pour l'agent DevOUPS
+ * Gestionnaire Docker pour l'agent 
  * @module modules/docker/manager
  */
 

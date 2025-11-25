@@ -1,5 +1,5 @@
 /**
- * Logger structuré pour l'agent DevOUPS
+ * Logger structuré pour l'agent 
  * @module utils/logger
  */
 

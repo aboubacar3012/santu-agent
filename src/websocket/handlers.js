@@ -1,5 +1,5 @@
 /**
- * Gestionnaires de messages WebSocket pour l'agent DevOUPS
+ * Gestionnaires de messages WebSocket pour l'agent 
  * @module websocket/handlers
  */
 
@@ -18,7 +18,7 @@ import { logger } from "../utils/logger.js";
 import { isValidDockerAction } from "../utils/validator.js";
 
 /**
- * Traite un message reçu du backend
+ * Traite un message reçu du frontend
  * @param {Object} message - Message reçu
  * @param {Function} sendMessage - Fonction pour envoyer une réponse
  * @param {Function} [registerResource] - Callback pour enregistrer une ressource (ex: stream) associée à l'ID

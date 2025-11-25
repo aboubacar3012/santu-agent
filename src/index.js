@@ -1,11 +1,10 @@
 /**
- * Point d'entrée principal de l'agent DevOUPS
+ * Point d'entrée principal de l'agent 
  * @module index
  */
 
 import { loadConfig } from "./config/env.js";
 import { logger } from "./utils/logger.js";
-import { AgentWebSocketClient } from "./websocket/client.js";
 import { createFrontendServer } from "./websocket/server.js";
 import { initDocker } from "./modules/docker/manager.js";
 
@@ -16,9 +15,8 @@ async function main() {
   try {
     // Charger la configuration
     const config = loadConfig();
-    logger.info("Démarrage de l'agent DevOUPS", {
+    logger.info("Démarrage de l'agent ", {
       hostname: config.hostname,
-      backendUrl: config.backendUrl,
     });
 
     // Initialiser Docker
@@ -31,18 +29,6 @@ async function main() {
       token: config.clientToken,
     });
 
-    // Créer et démarrer le client WebSocket vers le backend si configuré
-    let wsClient = null;
-
-    if (config.backendUrl) {
-      wsClient = new AgentWebSocketClient(config, null);
-      await wsClient.connect();
-    } else {
-      logger.info(
-        "Aucun backend WebSocket configuré, l'agent fonctionne en mode autonome"
-      );
-    }
-
     let isShuttingDown = false;
 
     const gracefulShutdown = async (signal) => {
@@ -52,10 +38,6 @@ async function main() {
       isShuttingDown = true;
 
       logger.info(`Signal ${signal} reçu, arrêt en cours...`);
-
-      if (wsClient) {
-        wsClient.disconnect();
-      }
 
       try {
         await frontendServer.close();
