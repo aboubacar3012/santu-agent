@@ -115,8 +115,6 @@ if [[ $RUN_LOCALLY == "y" || $RUN_LOCALLY == "Y" ]]; then
     --restart unless-stopped \
     --privileged \
     -v /var/run/docker.sock:/var/run/docker.sock \
-    -e AGENT_TOKEN="kCYDJLUfDY1g8i1mVmOoxy" \
-    -e AGENT_HOSTNAME="vps-sandbox" \
     -p 7081:7081 \
     --name ${CONTAINER_NAME} \
     ${IMAGE_NAME}:${TAG}

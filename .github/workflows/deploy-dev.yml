@@ -39,46 +39,26 @@ jobs:
 
       # Étape 2: Supprimer l'ancien fichier .env s'il existe
       # Le fichier .env contient les variables d'environnement de l'application
-      # - name: Clean old .env file
-      #   run: rm -f .env
+      - name: Clean old .env file
+        run: rm -f .env
 
       # Étape 3: Créer le fichier .env avec toutes les variables d'environnement
       # Ces variables configurent l'application (base de données, services externes, etc.)
-      # - name: Create .env file
-      #   run: |
-      #     set -euo pipefail
-
-      #      RESPONSE_FILE=$(mktemp)
-      #      HTTP_STATUS=$(curl --silent --show-error --fail \
-      #        --get \
-      #        --data-urlencode "site_url=${{ vars.SITE_URL }}" \
-      #        --data-urlencode "client_id=${{ vars.CLIENT_ID }}" \
-      #        --data-urlencode "client_secret=${{ vars.CLIENT_SECRET }}" \
-      #        --data-urlencode "project_id=${{ vars.PROJECT_ID }}" \
-      #        --data-urlencode "env=dev" \
-      #        --write-out "%{http_code}" \
-      #        --output "$RESPONSE_FILE" \
-      #        https://env-5.elyamaje.com/getEnvVariables || true)
-
-      #      HTTP_STATUS=${HTTP_STATUS:-0}
-
-      #      if [[ "$HTTP_STATUS" -ne 200 || ! -s "$RESPONSE_FILE" ]]; then
-      #        echo "::error::Échec de la récupération des variables (HTTP ${HTTP_STATUS:-unknown})"
-      #        echo "Réponse brute :"
-      #        cat "$RESPONSE_FILE" 2>/dev/null || echo "<aucune réponse>"
-      #        exit 1
-      #      fi
-
-      #      jq -e '.secrets and (.secrets | type == "array")' "$RESPONSE_FILE" > /dev/null
-      #      jq -r '.secrets[] | "\(.key)=\(.value)"' "$RESPONSE_FILE" > .env
+      - name: Create .env file
+        run: |
+          set -euo pipefail
+          cat <<'EOF' > .env
+          AGENT_TOKEN="kCYDJLUfDY1g8i1mVmOoxy"
+          AGENT_HOSTNAME="vps-sandbox"
+          EOF
 
       # Étape 4: Afficher le contenu du fichier .env pour débugger
       # Cela nous permet de vérifier que toutes les variables sont bien définies
-      # - name: Debug .env
-      #   run: |
-      #     echo "------ Contenu de .env ------"
-      #     cat .env
-      #     echo "----------------------------------------"
+      - name: Debug .env
+        run: |
+          echo "------ Contenu de .env ------"
+          cat .env
+          echo "----------------------------------------"
 
       # Étape 5: Se connecter au registre Docker
       - name: Log in to GitHub Container Registry
