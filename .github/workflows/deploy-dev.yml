@@ -49,7 +49,7 @@ jobs:
           set -euo pipefail
           cat <<'EOF' > .env
           AGENT_TOKEN="kCYDJLUfDY1g8i1mVmOoxy"
-          AGENT_HOSTNAME="vps-dev"
+          AGENT_HOSTNAME="vps-dev-global"
           EOF
 
       # Étape 4: Afficher le contenu du fichier .env pour débugger
