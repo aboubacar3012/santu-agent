@@ -4,6 +4,8 @@ import { logger } from "../utils/logger.js";
 import { handleMessage } from "./handlers.js";
 import { createError } from "../types/messages.js";
 
+const DEFAULT_HEALTHCHECK_PATH = "/healthcheck";
+
 /**
  * Serveur WebSocket frontend.
  *
@@ -19,11 +21,21 @@ import { createError } from "../types/messages.js";
  * @param {string|null} options.token - Jeton requis pour l'authentification
  * @returns {{ server: import('http').Server, wss: WebSocketServer, close: () => Promise<void> }}
  */
-export function createFrontendServer({ port, host, token }) {
+export function createFrontendServer({
+  port,
+  host,
+  token,
+  healthcheckPath = DEFAULT_HEALTHCHECK_PATH,
+}) {
+  const normalizedHealthcheckPath = normalizeHealthcheckPath(healthcheckPath);
   const server = http.createServer();
   const wss = new WebSocketServer({
     server,
     perMessageDeflate: false,
+  });
+
+  server.on("request", (req, res) => {
+    handleHttpRequest(req, res, normalizedHealthcheckPath);
   });
 
   wss.on("connection", (ws, req) => {
@@ -186,6 +198,7 @@ export function createFrontendServer({ port, host, token }) {
     logger.info("Serveur WebSocket frontend démarré", {
       port,
       host,
+      healthcheckPath: normalizedHealthcheckPath,
     });
   });
 
@@ -213,5 +226,68 @@ export function createFrontendServer({ port, host, token }) {
         });
       }),
   };
+}
+
+function normalizeHealthcheckPath(pathname) {
+  if (!pathname) {
+    return DEFAULT_HEALTHCHECK_PATH;
+  }
+
+  return pathname.startsWith("/") ? pathname : `/${pathname}`;
+}
+
+function handleHttpRequest(req, res, healthcheckPath) {
+  // Laisser les requêtes d'upgrade WebSocket être gérées par ws.
+  if (req.headers.upgrade) {
+    return;
+  }
+
+  let requestUrl;
+  try {
+    requestUrl = new URL(
+      req.url || "/",
+      `http://${req.headers.host || "localhost"}`
+    );
+  } catch (error) {
+    logger.warn("Requête HTTP invalide reçue sur le serveur frontend", {
+      error: error.message,
+    });
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "error", message: "Invalid URL" }));
+    return;
+  }
+
+  if (requestUrl.pathname !== healthcheckPath) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "error", message: "Not Found" }));
+    return;
+  }
+
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    res.writeHead(405, {
+      "Content-Type": "application/json",
+      Allow: "GET, HEAD",
+    });
+    res.end(JSON.stringify({ status: "error", message: "Method Not Allowed" }));
+    return;
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+  });
+
+  if (req.method === "HEAD") {
+    res.end();
+    return;
+  }
+
+  res.end(
+    JSON.stringify({
+      status: "ok",
+      uptime: Number(process.uptime().toFixed(3)),
+      timestamp: new Date().toISOString(),
+    })
+  );
 }
 

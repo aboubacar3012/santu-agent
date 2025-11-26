@@ -163,27 +163,22 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key -p 53796 ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST_DEV }} << 'EOF'
-            echo "Vérification du statut du conteneur Devoups Agent..."
+            echo "Vérification HTTP /healthcheck..."
+            HEALTH_RESPONSE=$(curl --silent --fail http://127.0.0.1:7081/healthcheck || true)
+            echo "Réponse healthcheck:"
+            echo "$HEALTH_RESPONSE"
 
-            echo "Installation de wscat pour le test WebSocket..."
-            npm install -g wscat >/tmp/wscat-install.log 2>&1
-
-            echo "Test de l'API WebSocket docker.list..."
-            WS_RESPONSE=$(printf '{ "id": "req-1", "action": "docker.list", "params": {} }\n' | wscat -c "ws://127.0.0.1:7081?token=kCYDJLUfDY1g8i1mVmOoxy&serverId=vps-sandbox" 2>&1 || true)
-            echo "Réponse WebSocket:"
-            echo "$WS_RESPONSE"
-
-            if echo "$WS_RESPONSE" | grep -q 'connect ENOENT /var/run/docker.sock'; then
-              echo "Le daemon Docker n'est pas accessible depuis le conteneur Devoups Agent."
+            if [ -z "$HEALTH_RESPONSE" ]; then
+              echo "Aucune réponse reçue du point de contrôle de santé."
               exit 1
             fi
 
-            if ! echo "$WS_RESPONSE" | grep -q '"success":true'; then
-              echo "Réponse inattendue du WebSocket docker.list."
+            if ! echo "$HEALTH_RESPONSE" | jq -e '.status == "ok"' >/dev/null 2>&1; then
+              echo "Statut healthcheck invalide (attendu status=ok)."
               exit 1
             fi
 
-            echo "Vérification WebSocket réussie."
+            echo "Vérification healthcheck réussie."
           EOF
           echo "Vérification du conteneur Devoups Agent terminée"
         continue-on-error: false

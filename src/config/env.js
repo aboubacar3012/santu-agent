@@ -33,8 +33,9 @@ const REQUIRED_KEYS = []; // "AGENT_TOKEN", "AGENT_HOSTNAME"
  *   hostname: string,
  *   logLevel: string,
  *   dockerSocketPath: string,
- *   frontendPort: number,
+ *   frontendPort: number|string,
  *   frontendHost: string,
+ *   healthcheckPath: string,
  * }} Configuration validée et prête à l'emploi
  * @throws {Error} Si une variable requise est manquante
  */
@@ -73,5 +74,7 @@ export function loadConfig() {
     frontendPort: "7081",
     // Interface réseau à exposer (0.0.0.0 = toutes les interfaces).
     frontendHost: "0.0.0.0",
+    // Route HTTP utilisée comme point de contrôle de santé.
+    healthcheckPath: "/healthcheck",
   };
 }

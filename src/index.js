@@ -34,6 +34,7 @@ async function main() {
       port: config.frontendPort,
       host: config.frontendHost,
       token: config.clientToken,
+      healthcheckPath: config.healthcheckPath,
     });
 
     let isShuttingDown = false;
