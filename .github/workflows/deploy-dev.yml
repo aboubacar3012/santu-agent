@@ -129,7 +129,14 @@ jobs:
             
             echo "Démarrage du conteneur Devoups Agent..."
             # Démarrer le conteneur sur le réseau bridge (par défaut) puis le connecter au réseau personnalisé
-            docker run -d --name devoups-agent -p 7081:7081 ghcr.io/elyamajeorg/devoups-agent:latest
+            # docker run -d --name devoups-agent  -p 7081:7081 ghcr.io/elyamajeorg/devoups-agent:latest
+            docker run -d \
+              --name devoups-agent \
+              --restart unless-stopped \
+              --privileged \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -p 7081:7081 \
+              ghcr.io/elyamajeorg/devoups-agent:latest
 
             echo "Vérification du statut du conteneur Devoups Agent..."
             # Vérifier que le conteneur Devoups Agent fonctionne correctement
