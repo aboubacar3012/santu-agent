@@ -57,11 +57,19 @@ export function createFrontendServer({
       connectionUrl.searchParams.get("hostname") || null;
 
     if (token && clientToken !== token) {
-      logger.warn("Tentative de connexion avec un token invalide", {
+      logger.warn("Tentative de connexion avec un token invalide ", {
         remoteAddress: req.socket.remoteAddress,
         requestedServerHostname,
       });
       ws.close(1008, "Invalid token");
+      return;
+    }
+
+    if (!requestedServerHostname) {
+      logger.warn("Tentative de connexion sans hostname spécifié", {
+        remoteAddress: req.socket.remoteAddress,
+      });
+      ws.close(1008, "Hostname requis");
       return;
     }
 

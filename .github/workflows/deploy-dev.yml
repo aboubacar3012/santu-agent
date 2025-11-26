@@ -175,7 +175,7 @@ jobs:
 
             if ! echo "$HEALTH_RESPONSE" | jq -e '.status == "ok"' >/dev/null 2>&1; then
               echo "Statut healthcheck invalide (attendu status=ok)."
-              exit 1
+            exit 1
             fi
 
             echo "Vérification healthcheck réussie."
