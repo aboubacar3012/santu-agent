@@ -30,14 +30,36 @@ export async function listContainers(params = {}) {
     const docker = getDocker();
     const { all = false } = validateDockerParams("list", params);
     const containers = await docker.listContainers({ all });
-    return containers.map((container) => ({
-      id: container.Id,
-      names: container.Names,
-      image: container.Image,
-      status: container.Status,
-      state: container.State,
-      created: container.Created,
-    }));
+    const enrichedContainers = await Promise.all(
+      containers.map(async (container) => {
+        let resourceUsage = null;
+
+        try {
+          const stats = await fetchContainerStatsSnapshot(docker, container.Id);
+          if (stats) {
+            resourceUsage = formatResourceUsage(stats);
+          }
+        } catch (statsError) {
+          logger.warn("Impossible de récupérer les stats du conteneur", {
+            containerId: container.Id,
+            error: statsError.message,
+          });
+        }
+
+        return {
+          id: container.Id,
+          names: container.Names,
+          image: container.Image,
+          status: container.Status,
+          state: container.State,
+          created: container.Created,
+          ports: container.Ports,
+          resourceUsage,
+        };
+      })
+    );
+
+    return enrichedContainers;
   } catch (error) {
     logger.error("Erreur lors de la liste des conteneurs", {
       error: error.message,
@@ -232,8 +254,10 @@ export async function getContainerStats(params, onStats = null) {
               limit: data.memory_stats.limit || 0,
               percent:
                 data.memory_stats.limit > 0
-                  ? ((data.memory_stats.usage / data.memory_stats.limit) *
-                      100).toFixed(2)
+                  ? (
+                      (data.memory_stats.usage / data.memory_stats.limit) *
+                      100
+                    ).toFixed(2)
                   : 0,
             },
             network: data.networks || {},
@@ -268,8 +292,10 @@ export async function getContainerStats(params, onStats = null) {
                 limit: data.memory_stats.limit || 0,
                 percent:
                   data.memory_stats.limit > 0
-                    ? ((data.memory_stats.usage / data.memory_stats.limit) *
-                        100).toFixed(2)
+                    ? (
+                        (data.memory_stats.usage / data.memory_stats.limit) *
+                        100
+                      ).toFixed(2)
                     : 0,
               },
               network: data.networks || {},
@@ -303,14 +329,129 @@ export async function getContainerStats(params, onStats = null) {
  * @returns {number} Pourcentage CPU
  */
 function calculateCpuPercent(stats) {
-  const cpuDelta = stats.cpu_stats.cpu_usage.total_usage - (stats.precpu_stats?.cpu_usage?.total_usage || 0);
-  const systemDelta = stats.cpu_stats.system_cpu_usage - (stats.precpu_stats?.system_cpu_usage || 0);
+  const cpuDelta =
+    stats.cpu_stats.cpu_usage.total_usage -
+    (stats.precpu_stats?.cpu_usage?.total_usage || 0);
+  const systemDelta =
+    stats.cpu_stats.system_cpu_usage -
+    (stats.precpu_stats?.system_cpu_usage || 0);
   const numCpus = stats.cpu_stats.online_cpus || 1;
 
   if (systemDelta > 0 && cpuDelta > 0) {
     return ((cpuDelta / systemDelta) * numCpus * 100).toFixed(2);
   }
   return "0.00";
+}
+
+async function fetchContainerStatsSnapshot(docker, containerId) {
+  const container = docker.getContainer(containerId);
+  const stream = await container.stats({ stream: false });
+
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      if (stream?.destroy) {
+        try {
+          stream.destroy();
+        } catch {
+          // ignore cleanup errors
+        }
+      }
+    };
+
+    stream.on("data", (chunk) => {
+      try {
+        const parsed = JSON.parse(chunk.toString());
+        cleanup();
+        resolve(parsed);
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
+    });
+
+    stream.on("error", (error) => {
+      cleanup();
+      reject(error);
+    });
+  });
+}
+
+function formatResourceUsage(stats) {
+  if (!stats) {
+    return null;
+  }
+
+  const memoryUsage = stats.memory_stats?.usage || 0;
+  const memoryLimit = stats.memory_stats?.limit || 0;
+  const cpuPercent = calculateCpuPercent(stats);
+  const { rxBytes, txBytes } = aggregateNetworkBytes(stats.networks);
+  const { readBytes, writeBytes } = aggregateBlockIO(stats.blkio_stats);
+
+  return {
+    memory: formatBytes(memoryUsage),
+    memoryLimit: memoryLimit ? formatBytes(memoryLimit) : undefined,
+    cpu: `${cpuPercent}%`,
+    networkIO:
+      rxBytes || txBytes
+        ? `${formatBytes(rxBytes)} / ${formatBytes(txBytes)}`
+        : undefined,
+    blockIO:
+      readBytes || writeBytes
+        ? `${formatBytes(readBytes)} / ${formatBytes(writeBytes)}`
+        : undefined,
+  };
+}
+
+function aggregateNetworkBytes(networks = {}) {
+  return Object.values(networks).reduce(
+    (acc, iface) => {
+      const rx = iface?.rx_bytes || 0;
+      const tx = iface?.tx_bytes || 0;
+      return {
+        rxBytes: acc.rxBytes + rx,
+        txBytes: acc.txBytes + tx,
+      };
+    },
+    { rxBytes: 0, txBytes: 0 }
+  );
+}
+
+function aggregateBlockIO(blkioStats = {}) {
+  const recursive = blkioStats.io_service_bytes_recursive || [];
+
+  return recursive.reduce(
+    (acc, entry) => {
+      const op = entry?.op?.toLowerCase();
+      const value = entry?.value || 0;
+
+      if (op === "read") {
+        acc.readBytes += value;
+      } else if (op === "write") {
+        acc.writeBytes += value;
+      }
+
+      return acc;
+    },
+    { readBytes: 0, writeBytes: 0 }
+  );
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  const precision = value >= 10 ? 1 : 2;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
 }
 
 /**
