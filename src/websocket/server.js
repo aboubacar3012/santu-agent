@@ -67,7 +67,7 @@ export function createFrontendServer({
       return;
     }
 
-    if (!requestedServerHostname && requestedServerHostname !== hostname) {
+    if (!requestedServerHostname || requestedServerHostname !== hostname) {
       logger.warn("Tentative de connexion sans hostname spécifié", {
         remoteAddress: req.socket.remoteAddress,
       });
