@@ -34,6 +34,7 @@ async function main() {
       port: config.frontendPort,
       host: config.frontendHost,
       token: config.clientToken,
+      hostname: config.hostname,
       healthcheckPath: config.healthcheckPath,
     });
 

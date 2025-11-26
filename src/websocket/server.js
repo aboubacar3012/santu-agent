@@ -4,6 +4,7 @@ import { logger } from "../utils/logger.js";
 import { handleMessage } from "./handlers.js";
 import { createError } from "../types/messages.js";
 
+
 const DEFAULT_HEALTHCHECK_PATH = "/healthcheck";
 
 /**
@@ -25,6 +26,7 @@ export function createFrontendServer({
   port,
   host,
   token,
+  hostname,
   healthcheckPath = DEFAULT_HEALTHCHECK_PATH,
 }) {
   const normalizedHealthcheckPath = normalizeHealthcheckPath(healthcheckPath);
@@ -65,7 +67,7 @@ export function createFrontendServer({
       return;
     }
 
-    if (!requestedServerHostname) {
+    if (!requestedServerHostname && requestedServerHostname !== hostname) {
       logger.warn("Tentative de connexion sans hostname spécifié", {
         remoteAddress: req.socket.remoteAddress,
       });
