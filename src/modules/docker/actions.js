@@ -345,33 +345,23 @@ function calculateCpuPercent(stats) {
 
 async function fetchContainerStatsSnapshot(docker, containerId) {
   const container = docker.getContainer(containerId);
-  const stream = await container.stats({ stream: false });
 
   return new Promise((resolve, reject) => {
-    const cleanup = () => {
-      if (stream?.destroy) {
-        try {
-          stream.destroy();
-        } catch {
-          // ignore cleanup errors
-        }
-      }
-    };
-
-    stream.on("data", (chunk) => {
-      try {
-        const parsed = JSON.parse(chunk.toString());
-        cleanup();
-        resolve(parsed);
-      } catch (error) {
-        cleanup();
+    container.stats({ stream: false }, (error, result) => {
+      if (error) {
         reject(error);
+        return;
       }
-    });
 
-    stream.on("error", (error) => {
-      cleanup();
-      reject(error);
+      try {
+        if (Buffer.isBuffer(result)) {
+          resolve(JSON.parse(result.toString()));
+        } else {
+          resolve(result);
+        }
+      } catch (parseError) {
+        reject(parseError);
+      }
     });
   });
 }
