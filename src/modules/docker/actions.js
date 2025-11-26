@@ -28,7 +28,7 @@ import { validateDockerParams } from "../../utils/validator.js";
 export async function listContainers(params = {}) {
   try {
     const docker = getDocker();
-    const { all = false } = validateDockerParams("list", params);
+    const { all = true } = validateDockerParams("list", params);
     const containers = await docker.listContainers({ all });
     const enrichedContainers = await Promise.all(
       containers.map(async (container) => {
