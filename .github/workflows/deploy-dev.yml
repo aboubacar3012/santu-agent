@@ -143,7 +143,7 @@ jobs:
         if: success()
 
   # Job 5: Vérification du conteneur Devoups Agent
-  verify-devoups-container:
+  verify-devoups-agent-container:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     needs: [deploy-devoups-agent]
@@ -156,18 +156,27 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key -p 53796 ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST_DEV }} << 'EOF'
-              echo "Vérification du statut du conteneur Devoups Agent..."
-            for i in {1..5}; do
-              if docker ps | grep devoups-agent && curl --fail http://localhost:7081; then
-                echo "Le conteneur Devoups Agent est en cours d'exécution."
-                exit 0
-              fi
-              echo "Attente du démarrage du conteneur Devoups Agent... ($i/5)"
-              sleep 5
-            done
-            echo "Échec de la vérification du conteneur Devoups Agent."
-            docker logs devoups-agent
-            exit 1
+            echo "Vérification du statut du conteneur Devoups Agent..."
+
+            echo "Installation de wscat pour le test WebSocket..."
+            npm install -g wscat >/tmp/wscat-install.log 2>&1
+
+            echo "Test de l'API WebSocket docker.list..."
+            WS_RESPONSE=$(printf '{ "id": "req-1", "action": "docker.list", "params": {} }\n' | wscat -c "ws://127.0.0.1:7081?token=kCYDJLUfDY1g8i1mVmOoxy&serverId=vps-sandbox" 2>&1 || true)
+            echo "Réponse WebSocket:"
+            echo "$WS_RESPONSE"
+
+            if echo "$WS_RESPONSE" | grep -q 'connect ENOENT /var/run/docker.sock'; then
+              echo "Le daemon Docker n'est pas accessible depuis le conteneur Devoups Agent."
+              exit 1
+            fi
+
+            if ! echo "$WS_RESPONSE" | grep -q '"success":true'; then
+              echo "Réponse inattendue du WebSocket docker.list."
+              exit 1
+            fi
+
+            echo "Vérification WebSocket réussie."
           EOF
           echo "Vérification du conteneur Devoups Agent terminée"
         continue-on-error: false
