@@ -246,10 +246,10 @@ async function getUserSshKeys(username, homeDir) {
 }
 
 /**
- * Liste toutes les clés SSH du serveur sans duplication
+ * Liste toutes les clés SSH du serveur (avec duplication si une clé apparaît plusieurs fois)
  * @param {Object} params - Paramètres (non utilisés pour l'instant)
  * @param {Object} [callbacks] - Callbacks (non utilisés pour cette action)
- * @returns {Promise<Array>} Liste des clés SSH uniques
+ * @returns {Promise<Array>} Liste de toutes les clés SSH trouvées (une entrée par occurrence)
  */
 export async function listSshKeys(params = {}, callbacks = {}) {
   try {
@@ -261,7 +261,7 @@ export async function listSshKeys(params = {}, callbacks = {}) {
     const users = await getSystemUsers();
     logger.debug(`Trouvé ${users.length} utilisateurs`);
 
-    // Map pour stocker les clés uniques (clé publique -> métadonnées)
+    // Map pour regrouper les clés identiques par publicKey
     const keysMap = new Map();
 
     // Parcourir chaque utilisateur
@@ -274,17 +274,17 @@ export async function listSshKeys(params = {}, callbacks = {}) {
 
         const userKeys = await getUserSshKeys(username, homeDir);
 
-        // Ajouter chaque clé à la map (déduplication)
+        // Ajouter chaque clé trouvée au tableau (regroupement par publicKey)
         for (const key of userKeys) {
           const keyId = key.publicKey.trim();
 
           if (keysMap.has(keyId)) {
-            // Clé déjà trouvée, ajouter l'utilisateur et la source
+            // Clé déjà trouvée, ajouter user et source si pas déjà présents
             const existing = keysMap.get(keyId);
             if (!existing.users.includes(username)) {
               existing.users.push(username);
             }
-            if (!existing.sources.includes(key.source)) {
+            if (key.source && !existing.sources.includes(key.source)) {
               existing.sources.push(key.source);
             }
           } else {
@@ -293,7 +293,7 @@ export async function listSshKeys(params = {}, callbacks = {}) {
               publicKey: key.publicKey,
               type: key.type,
               users: [username],
-              sources: [key.source],
+              sources: key.source ? [key.source] : [],
               fingerprint: null, // Sera rempli plus tard si nécessaire
             });
           }
@@ -307,18 +307,16 @@ export async function listSshKeys(params = {}, callbacks = {}) {
       }
     }
 
-    // Convertir la map en tableau
-    const uniqueKeys = Array.from(keysMap.values());
+    // Convertir la Map en tableau
+    const allKeys = Array.from(keysMap.values());
 
     // Optionnel : récupérer les fingerprints (peut être lent)
     // Pour l'instant, on les laisse à null pour des raisons de performance
     // Si besoin, on peut les récupérer en parallèle avec Promise.all
 
-    logger.info(
-      `Récupération terminée : ${uniqueKeys.length} clés SSH uniques`
-    );
+    logger.info(`Récupération terminée : ${allKeys.length} clés SSH trouvées`);
 
-    return uniqueKeys;
+    return allKeys;
   } catch (error) {
     logger.error("Erreur lors de la récupération des clés SSH", {
       error: error.message,

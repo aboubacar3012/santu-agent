@@ -11,6 +11,7 @@
 
 import * as dockerModule from "./docker/index.js";
 import * as sshModule from "./ssh/index.js";
+import * as cronModule from "./cron/index.js";
 import { logger } from "../shared/logger.js";
 
 /**
@@ -73,6 +74,22 @@ try {
 } catch (error) {
   logger.error("Erreur lors de l'enregistrement du module Docker", {
     error: error.message,
+  });
+  throw error;
+}
+
+try {
+  logger.debug("Tentative d'enregistrement du module Cron", {
+    cronModule,
+    hasActions: !!cronModule.actions,
+    hasValidator: !!cronModule.validator,
+  });
+  registerModule("cron", cronModule);
+  logger.info("Module Cron enregistré avec succès");
+} catch (error) {
+  logger.error("Erreur lors de l'enregistrement du module Cron", {
+    error: error.message,
+    stack: error.stack,
   });
   throw error;
 }
