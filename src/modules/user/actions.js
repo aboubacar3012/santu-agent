@@ -117,6 +117,7 @@ export async function listUsers(params = {}, callbacks = {}) {
 
           // Récupérer les groupes avec id -nG (comme dans la commande shell)
           const groupsStr = await getUserGroups(user);
+          console.log(groupsStr);
 
           // Construire l'objet utilisateur (comme dans le JSON de la commande shell)
           return {
