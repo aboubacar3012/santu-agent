@@ -14,7 +14,7 @@ RUN npm install --omit=dev
 
 # Copier le code source
 COPY src/ ./src/
-COPY .env ./.env
+# COPY .env ./.env
 
 # L'agent doit exécuter des opérations privilégiées (pilotage Docker, UFW, etc.).
 # On conserve donc l'utilisateur root dans le conteneur.

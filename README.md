@@ -1,10 +1,12 @@
 #  Agent
 
-Agent léger pour la gestion des conteneurs Docker sur les serveurs distants via WebSocket.
+Agent léger et modulaire pour la gestion des serveurs distants via WebSocket. Architecture extensible permettant d'ajouter facilement de nouveaux modules (Docker, SSH, etc.).
 
 ## 🚀 Fonctionnalités
 
+- **Architecture modulaire** : Système extensible permettant d'ajouter facilement de nouveaux modules
 - **Gestion Docker** : Liste, démarrage, arrêt, redémarrage de conteneurs
+- **Gestion SSH** : Récupération des clés SSH du serveur avec déduplication automatique
 - **Logs en temps réel** : Récupération et streaming des logs Docker
 - **Statistiques** : Monitoring des performances des conteneurs
 - **Communication WebSocket** : Serveur WebSocket pour connexions frontend directes
@@ -125,6 +127,14 @@ L'agent accepte les messages envoyés par le frontend via le serveur WebSocket e
 }
 ```
 
+```json
+{
+  "id": "uuid-request",
+  "action": "ssh.list",
+  "params": {}
+}
+```
+
 ### Messages envoyés (vers frontend)
 
 **Réponse de succès :**
@@ -158,6 +168,32 @@ L'agent accepte les messages envoyés par le frontend via le serveur WebSocket e
 - `docker.stats` - Récupère les statistiques (avec option `stream` pour le temps réel)
 - `docker.exec` - Exécute une commande dans un conteneur
 
+## 🔐 Actions SSH supportées
+
+- `ssh.list` - Liste toutes les clés SSH publiques du serveur (parcourt tous les utilisateurs, élimine les doublons)
+
+### Format de réponse SSH
+
+```json
+{
+  "type": "response",
+  "id": "uuid-request",
+  "success": true,
+  "data": [
+    {
+      "publicKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...",
+      "type": "ed25519",
+      "users": ["user1", "user2"],
+      "sources": [
+        "/home/user1/.ssh/authorized_keys",
+        "/home/user2/.ssh/id_ed25519.pub"
+      ],
+      "fingerprint": null
+    }
+  ]
+}
+```
+
 ## 🏗️ Architecture
 
 ```
@@ -168,21 +204,40 @@ devoups-agent/
 │   │   └── env.js               # Configuration
 │   ├── websocket/
 │   │   ├── server.js            # Serveur WebSocket (frontend)
-│   │   └── handlers.js          # Gestionnaires de messages
-│   ├── modules/
-│   │   └── docker/
-│   │       ├── manager.js       # Gestionnaire Docker
-│   │       └── actions.js       # Actions Docker
-│   ├── utils/
-│   │   ├── logger.js            # Logger
-│   │   ├── validator.js         # Validation
-│   │   └── executor.js          # Exécution de commandes
-│   └── types/
-│       └── messages.js          # Types de messages
+│   │   └── handlers.js          # Routeur générique de messages
+│   ├── shared/                  # Utilitaires partagés entre tous les modules
+│   │   ├── logger.js            # Logger structuré
+│   │   ├── executor.js          # Exécution sécurisée de commandes
+│   │   └── messages.js          # Types et helpers de messages WebSocket
+│   └── modules/                  # Modules fonctionnels (extensibles)
+│       ├── index.js              # Registre central des modules
+│       ├── docker/
+│       │   ├── index.js          # Point d'entrée du module Docker
+│       │   ├── manager.js         # Gestionnaire Docker (singleton)
+│       │   ├── actions.js        # Actions Docker
+│       │   └── validator.js      # Validation spécifique Docker
+│       └── ssh/
+│           ├── index.js          # Point d'entrée du module SSH
+│           ├── actions.js        # Actions SSH
+│           └── validator.js      # Validation spécifique SSH
 ├── Dockerfile
 ├── docker-compose.yml
 └── package.json
 ```
+
+### Architecture modulaire
+
+L'agent utilise une architecture modulaire extensible :
+
+- **Registre de modules** (`modules/index.js`) : Enregistre et charge dynamiquement les modules disponibles
+- **Handler générique** (`websocket/handlers.js`) : Route les messages vers le bon module selon le format `module.action`
+- **Utilitaires partagés** (`shared/`) : Fonctions communes utilisées par tous les modules (logger, executor, messages)
+- **Modules indépendants** : Chaque module expose sa propre interface (`actions`, `validator`)
+
+Pour ajouter un nouveau module :
+1. Créer `modules/nouveau-module/` avec `actions.js`, `validator.js`, `index.js`
+2. Enregistrer le module dans `modules/index.js`
+3. Le module devient automatiquement accessible via `nouveau-module.action`
 
 ### Architecture de communication
 
@@ -193,11 +248,12 @@ Frontend → WebSocket (port 7080) → Agent → Docker
 
 ## 🔒 Sécurité
 
-- Validation de toutes les actions Docker (liste blanche)
-- Sanitization des noms de conteneurs
-- Authentification via token JWT (`token` dans l'URL)
+- Validation de toutes les actions via des validators spécifiques à chaque module (liste blanche)
+- Sanitization des paramètres d'entrée (noms de conteneurs, etc.)
+- Authentification via token (`token` dans l'URL WebSocket)
 - Serveur WebSocket authentifié exposé sur `AGENT_FRONTEND_PORT`
 - Exécution en utilisateur non-root dans le conteneur
+- Chaque module gère sa propre validation et sanitization
 
 ## 📝 Logs
 
@@ -216,6 +272,10 @@ Le niveau de log est configurable via `AGENT_LOG_LEVEL`.
 - Module UFW
 - Collecte de métriques système (CPU, RAM, Disk)
 - Gestion des backups
+- Module de gestion des certificats SSL
+- Module de monitoring système avancé
+
+> 💡 **Note** : L'architecture modulaire facilite l'ajout de nouveaux modules. Chaque module suit la même structure et s'intègre automatiquement au système de routage.
 
 ## 💻 Utilisation depuis le frontend
 
@@ -318,6 +378,34 @@ const stopMessage = {
 };
 
 socket.send(JSON.stringify(stopMessage));
+```
+
+### Exemple : Lister les clés SSH
+
+```javascript
+// Depuis une connexion WebSocket déjà établie
+const sshKeysMessage = {
+  id: crypto.randomUUID(),
+  action: "ssh.list",
+  params: {}
+};
+
+socket.send(JSON.stringify(sshKeysMessage));
+
+// Réponse attendue
+socket.onmessage = (event) => {
+  const response = JSON.parse(event.data);
+  
+  if (response.type === "response" && response.success) {
+    const sshKeys = response.data;
+    console.log(`Trouvé ${sshKeys.length} clés SSH uniques`);
+    
+    sshKeys.forEach(key => {
+      console.log(`- Type: ${key.type}, Utilisateurs: ${key.users.join(', ')}`);
+      console.log(`  Sources: ${key.sources.join(', ')}`);
+    });
+  }
+};
 ```
 
 ### Exemple complet avec React
@@ -649,6 +737,13 @@ function ContainerControl({ serverId, containerId, token }) {
 
 - Vérifier que le port `AGENT_FRONTEND_PORT` n'est pas déjà utilisé
 - Vérifier les permissions du processus (doit pouvoir écouter sur le port)
+
+### Module non trouvé
+
+- Vérifier que le module est bien enregistré dans `src/modules/index.js`
+- Vérifier les logs au démarrage pour voir les modules chargés
+- Redémarrer l'agent après l'ajout d'un nouveau module
+- Vérifier que le format de l'action est correct : `module.action` (ex: `docker.list`, `ssh.list`)
 
 ## 📄 Licence
 
