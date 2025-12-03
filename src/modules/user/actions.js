@@ -39,6 +39,13 @@ export async function listUsers(params = {}, callbacks = {}) {
     const passwdContent = readFileSync("/etc/passwd", "utf-8");
     const lines = passwdContent.split("\n");
 
+    const groupContent = readFileSync("/etc/group", "utf-8");
+    const gidToName = new Map();
+    groupContent.split("\n").forEach((line) => {
+      const [groupName, , gid] = line.split(":");
+      if (groupName && gid) gidToName.set(gid.trim(), groupName.trim());
+    });
+
     const users = [];
 
     for (const line of lines) {
@@ -57,8 +64,12 @@ export async function listUsers(params = {}, callbacks = {}) {
       // Equivalent exact du shell
       const groups_raw = await getUserGroupsRaw(user);
       const groups = groups_raw
-        ? groups_raw.split(",").filter((g) => g.trim())
+        ? groups_raw
+            .split(",")
+            .map((g) => g.trim())
+            .filter(Boolean)
         : [];
+      const namedGroups = groups.map((g) => gidToName.get(g) || g);
 
       users.push({
         user,
@@ -67,7 +78,7 @@ export async function listUsers(params = {}, callbacks = {}) {
         home,
         shell,
         comment: gecos,
-        groups,
+        groups: namedGroups,
         groups_raw,
       });
     }
