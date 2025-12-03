@@ -69,6 +69,7 @@ async function getUserGroups(username) {
  * @returns {Promise<Array>} Liste de tous les utilisateurs trouvés
  */
 export async function listUsers(params = {}, callbacks = {}) {
+  logger.error("hello world");
   try {
     validateUserParams("list", params);
 
