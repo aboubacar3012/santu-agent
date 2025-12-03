@@ -89,7 +89,11 @@ export async function listUsers(params = {}, callbacks = {}) {
       for (const line of lines) {
         const parsed = parsePasswdLine(line);
         if (parsed) {
-          users.push(parsed);
+          // Filtrer les utilisateurs système (UID < 1000)
+          const uid = parseInt(parsed.uid, 10);
+          if (!isNaN(uid) && uid >= 1000) {
+            users.push(parsed);
+          }
         }
       }
     } catch (error) {
@@ -106,7 +110,11 @@ export async function listUsers(params = {}, callbacks = {}) {
         for (const line of lines) {
           const parsed = parsePasswdLine(line);
           if (parsed) {
-            users.push(parsed);
+            // Filtrer les utilisateurs système (UID < 1000)
+            const uid = parseInt(parsed.uid, 10);
+            if (!isNaN(uid) && uid >= 1000) {
+              users.push(parsed);
+            }
           }
         }
       } catch (fallbackError) {
