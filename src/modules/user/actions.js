@@ -29,6 +29,8 @@ async function getUserGroups(username) {
       { timeout: 3000 }
     );
 
+    console.log(stdout);
+
     if (error) {
       logger.debug(`Erreur id -nG pour ${username}:`, { error, stderr });
       return "";
