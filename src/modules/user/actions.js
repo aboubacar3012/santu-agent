@@ -169,31 +169,70 @@ export async function listUsers(params = {}, callbacks = {}) {
       }
     }
 
-    // Récupérer les groupes pour chaque utilisateur avec la commande groups
-    logger.debug(`Récupération des groupes pour ${users.length} utilisateurs`);
-    
-    // Récupérer les groupes en parallèle (limité à 10 à la fois pour éviter la surcharge)
-    const batchSize = 10;
-    for (let i = 0; i < users.length; i += batchSize) {
-      const batch = users.slice(i, i + batchSize);
-      const groupPromises = batch.map(async (user) => {
-        const groups = await getUserGroups(user.username);
-        return { username: user.username, groups };
-      });
-      
-      const results = await Promise.all(groupPromises);
-      
-      // Associer les groupes aux utilisateurs
-      results.forEach(({ username, groups }) => {
-        const user = users.find((u) => u.username === username);
-        if (user) {
-          user.groups = groups;
-          // Le groupe principal est le premier groupe ou celui correspondant au GID
-          user.group = groups.length > 0 ? groups[0] : null;
+    // Récupérer tous les groupes et créer une map GID -> nom de groupe
+    logger.debug("Récupération de tous les groupes");
+    const groupMap = await getAllGroups();
+    logger.debug(`Trouvé ${groupMap.size} groupes`);
+
+    // Lire /etc/group pour obtenir les membres de chaque groupe
+    const groupMembers = new Map(); // Nom du groupe -> Array d'utilisateurs
+    try {
+      const groupContent = readFileSync("/etc/group", "utf-8");
+      const lines = groupContent.split("\n");
+      for (const line of lines) {
+        const cleaned = line.trim();
+        if (!cleaned || cleaned.startsWith("#")) continue;
+        // Format: group:x:gid:user1,user2,user3
+        const parts = cleaned.split(":");
+        if (parts.length >= 4) {
+          const groupName = parts[0];
+          const membersStr = parts[3];
+          if (membersStr && membersStr.trim()) {
+            const members = membersStr
+              .split(",")
+              .map((u) => u.trim())
+              .filter((u) => u);
+            groupMembers.set(groupName, members);
+          }
         }
+      }
+      logger.debug(
+        `Trouvé ${groupMembers.size} groupes avec membres dans /etc/group`
+      );
+    } catch (e) {
+      logger.debug("Erreur lors de la lecture de /etc/group pour les membres", {
+        error: e.message,
       });
     }
-    
+
+    // Construire les groupes pour chaque utilisateur en utilisant includes
+    logger.debug(`Construction des groupes pour ${users.length} utilisateurs`);
+
+    users.forEach((user) => {
+      const userGroups = new Set();
+
+      // 1. Groupe principal via GID
+      const mainGroup = groupMap.get(user.gid);
+      if (mainGroup) {
+        userGroups.add(mainGroup);
+      }
+
+      // 2. Parcourir tous les groupes et vérifier si l'utilisateur est membre avec includes
+      for (const [groupName, members] of groupMembers.entries()) {
+        if (members.includes(user.username)) {
+          userGroups.add(groupName);
+        }
+      }
+
+      // Assigner les groupes à l'utilisateur
+      user.groups = Array.from(userGroups);
+      // Le groupe principal est celui correspondant au GID ou le premier trouvé
+      user.group =
+        mainGroup || (user.groups.length > 0 ? user.groups[0] : null);
+
+      logger.debug(`Groupes pour ${user.username}:`, { groups: user.groups });
+    });
+
     logger.debug(`Groupes récupérés pour tous les utilisateurs`);
 
     logger.info(
