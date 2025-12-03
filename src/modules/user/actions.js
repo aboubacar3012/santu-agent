@@ -169,13 +169,10 @@ export async function listUsers(params = {}, callbacks = {}) {
       }
     }
 
-    // Récupérer tous les groupes et créer une map GID -> nom de groupe
-    logger.debug("Récupération de tous les groupes");
-    const groupMap = await getAllGroups();
-    logger.debug(`Trouvé ${groupMap.size} groupes`);
-
-    // Lire /etc/group pour obtenir les membres de chaque groupe
+    // Lire /etc/group pour obtenir tous les groupes et leurs membres
+    const groupMap = new Map(); // GID -> nom de groupe
     const groupMembers = new Map(); // Nom du groupe -> Array d'utilisateurs
+
     try {
       const groupContent = readFileSync("/etc/group", "utf-8");
       const lines = groupContent.split("\n");
@@ -184,23 +181,36 @@ export async function listUsers(params = {}, callbacks = {}) {
         if (!cleaned || cleaned.startsWith("#")) continue;
         // Format: group:x:gid:user1,user2,user3
         const parts = cleaned.split(":");
-        if (parts.length >= 4) {
+        if (parts.length >= 3) {
           const groupName = parts[0];
-          const membersStr = parts[3];
-          if (membersStr && membersStr.trim()) {
-            const members = membersStr
-              .split(",")
-              .map((u) => u.trim())
-              .filter((u) => u);
-            groupMembers.set(groupName, members);
+          const gid = parts[2];
+
+          // Créer la map GID -> nom de groupe
+          if (groupName && gid) {
+            groupMap.set(gid, groupName);
+          }
+
+          // Créer la map nom de groupe -> membres (si présents)
+          if (parts.length >= 4) {
+            const membersStr = parts[3];
+            if (membersStr && membersStr.trim()) {
+              const members = membersStr
+                .split(",")
+                .map((u) => u.trim())
+                .filter((u) => u);
+              if (members.length > 0) {
+                groupMembers.set(groupName, members);
+              }
+            }
           }
         }
       }
+      logger.debug(`Trouvé ${groupMap.size} groupes dans /etc/group`);
       logger.debug(
         `Trouvé ${groupMembers.size} groupes avec membres dans /etc/group`
       );
     } catch (e) {
-      logger.debug("Erreur lors de la lecture de /etc/group pour les membres", {
+      logger.debug("Erreur lors de la lecture de /etc/group", {
         error: e.message,
       });
     }
