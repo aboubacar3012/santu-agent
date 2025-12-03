@@ -15,6 +15,53 @@ import { validateUserParams } from "./validator.js";
 import { readFileSync } from "fs";
 
 /**
+ * Récupère le nom du groupe à partir du GID
+ * @param {string} gid - Group ID
+ * @returns {Promise<string|null>} Nom du groupe ou null si non trouvé
+ */
+async function getGroupName(gid) {
+  try {
+    // Utiliser getent group pour obtenir le nom du groupe
+    const { stdout, stderr, error } = await executeCommand(
+      `getent group ${gid} 2>/dev/null || echo ""`,
+      { timeout: 3000 }
+    );
+
+    if (error || stderr || !stdout || !stdout.trim()) {
+      // Fallback sur /etc/group
+      try {
+        const groupContent = readFileSync("/etc/group", "utf-8");
+        const lines = groupContent.split("\n");
+        for (const line of lines) {
+          const parts = line.trim().split(":");
+          if (parts.length >= 3 && parts[2] === gid) {
+            return parts[0]; // Retourner le nom du groupe
+          }
+        }
+      } catch (fallbackError) {
+        logger.debug(`Impossible de lire /etc/group pour GID ${gid}`, {
+          error: fallbackError.message,
+        });
+      }
+      return null;
+    }
+
+    // Parser la sortie de getent group: groupname:password:gid:members
+    const parts = stdout.trim().split(":");
+    if (parts.length >= 3 && parts[2] === gid) {
+      return parts[0];
+    }
+
+    return null;
+  } catch (error) {
+    logger.debug(`Erreur lors de la récupération du groupe pour GID ${gid}`, {
+      error: error.message,
+    });
+    return null;
+  }
+}
+
+/**
  * Parse une ligne de /etc/passwd
  * Format: username:password:uid:gid:comment:home:shell
  * @param {string} line - Ligne de /etc/passwd
@@ -51,6 +98,7 @@ function parsePasswdLine(line) {
     home: home || "",
     shell: shell || "",
     comment: comment || "",
+    group: null, // Sera rempli plus tard
   };
 }
 
@@ -127,7 +175,35 @@ export async function listUsers(params = {}, callbacks = {}) {
       }
     }
 
-    logger.info(`Récupération terminée : ${users.length} utilisateurs trouvés`);
+    // Récupérer les noms de groupes pour tous les utilisateurs
+    logger.debug("Récupération des noms de groupes");
+    const uniqueGids = [...new Set(users.map((u) => u.gid))];
+    const groupMap = new Map();
+
+    // Récupérer les groupes en parallèle (limité à 10 à la fois pour éviter la surcharge)
+    const batchSize = 10;
+    for (let i = 0; i < uniqueGids.length; i += batchSize) {
+      const batch = uniqueGids.slice(i, i + batchSize);
+      const groupPromises = batch.map(async (gid) => {
+        const groupName = await getGroupName(gid);
+        return [gid, groupName];
+      });
+      const results = await Promise.all(groupPromises);
+      results.forEach(([gid, groupName]) => {
+        if (groupName) {
+          groupMap.set(gid, groupName);
+        }
+      });
+    }
+
+    // Ajouter les noms de groupes aux utilisateurs
+    users.forEach((user) => {
+      user.group = groupMap.get(user.gid) || null;
+    });
+
+    logger.info(
+      `Récupération terminée : ${users.length} utilisateurs trouvés avec groupes`
+    );
 
     return users;
   } catch (error) {
