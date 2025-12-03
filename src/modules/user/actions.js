@@ -29,15 +29,13 @@ async function getUserGroups(username) {
       { timeout: 3000 }
     );
 
-    console.log(stdout);
-
     if (error) {
-      logger.debug(`Erreur id -nG pour ${username}:`, { error, stderr });
+      console.warn(`Erreur id -nG pour ${username}:`, { error, stderr });
       return "";
     }
 
     if (!stdout || !stdout.trim()) {
-      logger.debug(`Pas de sortie pour id -nG ${username}`);
+      console.warn(`Pas de sortie pour id -nG ${username}`);
       return "";
     }
 
@@ -49,11 +47,11 @@ async function getUserGroups(username) {
       .filter((g) => g && g.trim())
       .join(",");
 
-    logger.debug(`id -nG ${username} = "${output}" -> "${groups}"`);
+    console.warn(`id -nG ${username} = "${output}" -> "${groups}"`);
 
     return groups;
   } catch (error) {
-    logger.debug(
+    console.warn(
       `Exception lors de la récupération des groupes pour ${username}`,
       {
         error: error.message,
@@ -75,7 +73,7 @@ export async function listUsers(params = {}, callbacks = {}) {
   try {
     validateUserParams("list", params);
 
-    logger.debug("Début de la récupération des utilisateurs système");
+    console.warn("Début de la récupération des utilisateurs système");
 
     const users = [];
 
@@ -84,7 +82,7 @@ export async function listUsers(params = {}, callbacks = {}) {
       const passwdContent = readFileSync("/etc/passwd", "utf-8");
       const lines = passwdContent.split("\n");
 
-      logger.debug(`Traitement de ${lines.length} lignes de /etc/passwd`);
+      console.warn(`Traitement de ${lines.length} lignes de /etc/passwd`);
 
       // Traiter chaque ligne en parallèle par lots
       const batchSize = 10;
@@ -119,7 +117,6 @@ export async function listUsers(params = {}, callbacks = {}) {
 
           // Récupérer les groupes avec id -nG (comme dans la commande shell)
           const groupsStr = await getUserGroups(user);
-          console.log(groupsStr);
 
           // Construire l'objet utilisateur (comme dans le JSON de la commande shell)
           return {
