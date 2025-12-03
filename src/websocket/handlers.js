@@ -17,7 +17,7 @@ import {
   createError,
 } from "../shared/messages.js";
 import { logger } from "../shared/logger.js";
-import { getModule } from "../modules/index.js";
+import { getModule, listModules } from "../modules/index.js";
 
 /**
  * Traite un message reçu du frontend
@@ -54,6 +54,10 @@ export async function handleMessage(
     // Charger le module
     const module = getModule(moduleName);
     if (!module) {
+      logger.warn("Module non trouvé", {
+        moduleName,
+        availableModules: listModules(),
+      });
       sendMessage(createError(id, `Module non supporté: ${moduleName}`));
       return;
     }

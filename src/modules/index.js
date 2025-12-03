@@ -10,6 +10,8 @@
  */
 
 import * as dockerModule from "./docker/index.js";
+import * as sshModule from "./ssh/index.js";
+import { logger } from "../shared/logger.js";
 
 /**
  * Registre des modules disponibles
@@ -48,5 +50,32 @@ export function listModules() {
   return Array.from(modules.keys());
 }
 
-// Enregistrer le module Docker par défaut
-registerModule("docker", dockerModule);
+// Enregistrer les modules par défaut
+try {
+  logger.debug("Tentative d'enregistrement du module SSH", {
+    sshModule,
+    hasActions: !!sshModule.actions,
+    hasValidator: !!sshModule.validator,
+  });
+  registerModule("ssh", sshModule);
+  logger.info("Module SSH enregistré avec succès");
+} catch (error) {
+  logger.error("Erreur lors de l'enregistrement du module SSH", {
+    error: error.message,
+    stack: error.stack,
+  });
+  throw error;
+}
+
+try {
+  registerModule("docker", dockerModule);
+  logger.info("Module Docker enregistré avec succès");
+} catch (error) {
+  logger.error("Erreur lors de l'enregistrement du module Docker", {
+    error: error.message,
+  });
+  throw error;
+}
+
+// Log de debug pour vérifier les modules enregistrés
+logger.info("Modules disponibles", { modules: listModules() });
