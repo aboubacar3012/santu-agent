@@ -358,25 +358,57 @@ export async function listCronJobs(params = {}, callbacks = {}) {
     allJobs.push(...systemJobs);
     logger.info(`Trouvé ${systemJobs.length} tâches cron système`);
 
-    // 2. Récupérer les tâches cron utilisateurs depuis les fichiers
-    logger.debug("Étape 2: Lecture des fichiers crontab utilisateurs");
-    const userJobsFromFiles = await getUserCronJobsFromFiles();
-    allJobs.push(...userJobsFromFiles);
-    logger.info(
-      `Trouvé ${userJobsFromFiles.length} tâches cron utilisateurs depuis les fichiers`
-    );
-
-    // 3. Essayer aussi avec crontab -l pour chaque utilisateur (fallback)
-    logger.debug("Étape 3: Utilisation de crontab -l pour chaque utilisateur");
+    // 2. Récupérer tous les utilisateurs système (comme dans SSH)
+    logger.debug("Étape 2: Récupération de tous les utilisateurs système");
     const users = await getSystemUsers();
-    logger.info(`Traitement de ${users.length} utilisateurs`);
+    logger.info(`Trouvé ${users.length} utilisateurs à traiter`);
 
+    // 3. Parcourir chaque utilisateur pour récupérer ses tâches cron
+    logger.debug("Étape 3: Parcours de tous les utilisateurs");
     for (const username of users) {
       try {
-        const userJobs = await getUserCronJobs(username);
+        // Essayer d'abord de lire directement depuis les fichiers
+        const possiblePaths = [
+          `/var/spool/cron/crontabs/${username}`,
+          `/var/spool/cron/${username}`,
+        ];
+
+        let userJobs = [];
+
+        // Essayer de lire depuis les fichiers
+        for (const filePath of possiblePaths) {
+          if (existsSync(filePath)) {
+            try {
+              const content = readFileSync(filePath, "utf-8");
+              const lines = content.split("\n");
+              logger.debug(
+                `Lecture de ${filePath}: ${lines.length} lignes pour ${username}`
+              );
+
+              for (const line of lines) {
+                const parsed = parseCronLine(line, username, filePath);
+                if (parsed) {
+                  userJobs.push(parsed);
+                }
+              }
+              break; // Si on a trouvé et lu le fichier, pas besoin d'essayer les autres
+            } catch (error) {
+              logger.debug(`Erreur lors de la lecture de ${filePath}`, {
+                error: error.message,
+              });
+            }
+          }
+        }
+
+        // Si aucun fichier trouvé, essayer avec crontab -l
+        if (userJobs.length === 0) {
+          const crontabJobs = await getUserCronJobs(username);
+          userJobs.push(...crontabJobs);
+        }
+
+        // Ajouter les jobs trouvés (éviter les doublons)
         if (userJobs.length > 0) {
           logger.debug(`Trouvé ${userJobs.length} tâches pour ${username}`);
-          // Vérifier si ces jobs ne sont pas déjà dans la liste (éviter les doublons)
           for (const job of userJobs) {
             const isDuplicate = allJobs.some(
               (existingJob) =>
@@ -398,6 +430,7 @@ export async function listCronJobs(params = {}, callbacks = {}) {
           username,
           error: error.message,
         });
+        // Continuer avec le prochain utilisateur
       }
     }
 
