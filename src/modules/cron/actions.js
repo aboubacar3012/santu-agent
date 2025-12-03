@@ -26,8 +26,15 @@ function parseCronLine(line, user, source) {
   // Nettoyer la ligne
   const cleaned = line.trim();
 
-  // Ignorer les lignes vides et les commentaires
+  // Ignorer les lignes vides et les commentaires complets
   if (!cleaned || cleaned.startsWith("#")) {
+    return null;
+  }
+
+  // Vérifier si c'est une ligne cron valide (doit commencer par un chiffre, *, /, ou -)
+  // Format: minute hour day month weekday [user] command
+  const cronPattern = /^[\d\*\/\-\,\s]+/;
+  if (!cronPattern.test(cleaned)) {
     return null;
   }
 
@@ -48,6 +55,11 @@ function parseCronLine(line, user, source) {
     finalUser = user || "root";
   } else {
     // Ligne invalide
+    return null;
+  }
+
+  // Valider que les champs de schedule sont valides
+  if (!minute || !hour || !day || !month || !weekday) {
     return null;
   }
 
@@ -120,14 +132,18 @@ async function getUserCronJobs(username) {
 
   try {
     // Essayer d'utiliser crontab -l pour récupérer le crontab de l'utilisateur
-    // Essayer d'abord avec -u (nécessite root), puis sans si on est l'utilisateur
-    let command = `crontab -l -u ${username} 2>/dev/null || echo ""`;
+    // Essayer d'abord avec sudo crontab -l -u (nécessite root)
+    let command = `sudo crontab -l -u ${username} 2>/dev/null || crontab -l -u ${username} 2>/dev/null || echo ""`;
     let { stdout, stderr, error } = await executeCommand(command, {
       timeout: 5000,
     });
 
     // Si ça échoue, essayer sans -u si c'est l'utilisateur courant
-    if (error && stderr && !stderr.includes("no crontab")) {
+    if (
+      (error || !stdout || stdout.includes("no crontab")) &&
+      stderr &&
+      !stderr.includes("no crontab")
+    ) {
       logger.debug(`Tentative sans -u pour ${username}`, { error: stderr });
       command = `crontab -l 2>/dev/null || echo ""`;
       const result = await executeCommand(command, { timeout: 5000 });
@@ -388,6 +404,12 @@ export async function listCronJobs(params = {}, callbacks = {}) {
               for (const line of lines) {
                 const parsed = parseCronLine(line, username, filePath);
                 if (parsed) {
+                  logger.debug(
+                    `Tâche cron parsée depuis fichier pour ${username}: ${parsed.command.substring(
+                      0,
+                      50
+                    )}...`
+                  );
                   userJobs.push(parsed);
                 }
               }
@@ -395,7 +417,45 @@ export async function listCronJobs(params = {}, callbacks = {}) {
             } catch (error) {
               logger.debug(`Erreur lors de la lecture de ${filePath}`, {
                 error: error.message,
+                code: error.code,
               });
+              // Si permission denied, essayer avec sudo cat
+              if (
+                error.code === "EACCES" ||
+                error.message.includes("permission denied") ||
+                error.message.includes("EACCES")
+              ) {
+                try {
+                  logger.debug(`Tentative avec sudo cat pour ${filePath}`);
+                  const { stdout } = await executeCommand(
+                    `sudo cat ${filePath}`,
+                    { timeout: 5000 }
+                  );
+                  if (stdout && stdout.trim()) {
+                    const lines = stdout.split("\n");
+                    logger.debug(
+                      `Lecture avec sudo réussie: ${lines.length} lignes`
+                    );
+                    for (const line of lines) {
+                      const parsed = parseCronLine(line, username, filePath);
+                      if (parsed) {
+                        logger.debug(
+                          `Tâche cron parsée avec sudo pour ${username}: ${parsed.command.substring(
+                            0,
+                            50
+                          )}...`
+                        );
+                        userJobs.push(parsed);
+                      }
+                    }
+                    break;
+                  }
+                } catch (sudoError) {
+                  logger.debug(`Erreur avec sudo cat pour ${filePath}`, {
+                    error: sudoError.message,
+                  });
+                }
+              }
             }
           }
         }
