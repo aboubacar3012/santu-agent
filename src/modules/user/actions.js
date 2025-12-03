@@ -47,6 +47,7 @@ export async function listUsers(params = {}, callbacks = {}) {
     });
 
     const users = [];
+    const uniqueGroupsSet = new Set();
 
     for (const line of lines) {
       const cleaned = line.trim();
@@ -70,6 +71,7 @@ export async function listUsers(params = {}, callbacks = {}) {
             .filter(Boolean)
         : [];
       const namedGroups = groups.map((g) => gidToName.get(g) || g);
+      namedGroups.forEach((g) => uniqueGroupsSet.add(g));
 
       users.push({
         user,
@@ -83,8 +85,12 @@ export async function listUsers(params = {}, callbacks = {}) {
       });
     }
 
+    const uniqueGroups = Array.from(uniqueGroupsSet);
     logger.info(`listUsers terminé : ${users.length} utilisateurs trouvés`);
-    return users;
+    return {
+      users,
+      groups: uniqueGroups,
+    };
   } catch (error) {
     logger.error("Erreur dans listUsers", { error: error.message });
     throw error;
