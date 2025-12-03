@@ -195,15 +195,37 @@ export async function listUsers(params = {}, callbacks = {}) {
     const groupMap = await getAllGroups();
     logger.debug(`Trouvé ${groupMap.size} groupes`);
 
+    // Log de debug pour voir quelques exemples de groupes
+    if (groupMap.size > 0) {
+      const sampleGroups = Array.from(groupMap.entries()).slice(0, 10);
+      logger.debug("Exemples de groupes trouvés:", { sampleGroups });
+    }
+
+    // Log des GID des utilisateurs pour debug
+    const userGids = users.map((u) => u.gid);
+    logger.debug(`GID des utilisateurs à mapper:`, { userGids });
+
     // Ajouter les noms de groupes aux utilisateurs
+    const usersWithoutGroup = [];
     users.forEach((user) => {
       user.group = groupMap.get(user.gid) || null;
       if (!user.group) {
+        usersWithoutGroup.push({ username: user.username, gid: user.gid });
         logger.debug(
           `Groupe non trouvé pour GID ${user.gid} (utilisateur ${user.username})`
         );
       }
     });
+
+    if (usersWithoutGroup.length > 0) {
+      logger.warn(
+        `${usersWithoutGroup.length} utilisateurs sans groupe trouvé:`,
+        {
+          usersWithoutGroup,
+          availableGids: Array.from(groupMap.keys()),
+        }
+      );
+    }
 
     logger.info(
       `Récupération terminée : ${users.length} utilisateurs trouvés avec groupes`
