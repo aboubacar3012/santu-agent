@@ -15,50 +15,65 @@ import { validateUserParams } from "./validator.js";
 import { readFileSync } from "fs";
 
 /**
- * Récupère le nom du groupe à partir du GID
- * @param {string} gid - Group ID
- * @returns {Promise<string|null>} Nom du groupe ou null si non trouvé
+ * Récupère tous les groupes et crée une map GID -> nom de groupe
+ * @returns {Promise<Map<string, string>>} Map des GID vers noms de groupes
  */
-async function getGroupName(gid) {
-  try {
-    // Utiliser getent group pour obtenir le nom du groupe
-    const { stdout, stderr, error } = await executeCommand(
-      `getent group ${gid} 2>/dev/null || echo ""`,
-      { timeout: 3000 }
-    );
+async function getAllGroups() {
+  const groupMap = new Map();
 
-    if (error || stderr || !stdout || !stdout.trim()) {
-      // Fallback sur /etc/group
-      try {
-        const groupContent = readFileSync("/etc/group", "utf-8");
-        const lines = groupContent.split("\n");
-        for (const line of lines) {
-          const parts = line.trim().split(":");
-          if (parts.length >= 3 && parts[2] === gid) {
-            return parts[0]; // Retourner le nom du groupe
+  try {
+    // Utiliser getent group pour obtenir tous les groupes
+    const { stdout, stderr, error } = await executeCommand("getent group", {
+      timeout: 5000,
+    });
+
+    if (error || stderr) {
+      logger.debug(
+        "Erreur avec getent group, utilisation du fallback /etc/group"
+      );
+      throw new Error("Fallback to /etc/group");
+    }
+
+    // Parser les résultats de getent group
+    // Format: groupname:password:gid:members
+    const lines = stdout.split("\n").filter((line) => line.trim());
+    for (const line of lines) {
+      const parts = line.trim().split(":");
+      if (parts.length >= 3) {
+        const groupName = parts[0];
+        const gid = parts[2];
+        if (groupName && gid) {
+          groupMap.set(gid, groupName);
+        }
+      }
+    }
+  } catch (error) {
+    // Fallback sur /etc/group
+    try {
+      const groupContent = readFileSync("/etc/group", "utf-8");
+      const lines = groupContent.split("\n");
+      for (const line of lines) {
+        const cleaned = line.trim();
+        if (!cleaned || cleaned.startsWith("#")) {
+          continue;
+        }
+        const parts = cleaned.split(":");
+        if (parts.length >= 3) {
+          const groupName = parts[0];
+          const gid = parts[2];
+          if (groupName && gid) {
+            groupMap.set(gid, groupName);
           }
         }
-      } catch (fallbackError) {
-        logger.debug(`Impossible de lire /etc/group pour GID ${gid}`, {
-          error: fallbackError.message,
-        });
       }
-      return null;
+    } catch (fallbackError) {
+      logger.error("Impossible de lire /etc/group", {
+        error: fallbackError.message,
+      });
     }
-
-    // Parser la sortie de getent group: groupname:password:gid:members
-    const parts = stdout.trim().split(":");
-    if (parts.length >= 3 && parts[2] === gid) {
-      return parts[0];
-    }
-
-    return null;
-  } catch (error) {
-    logger.debug(`Erreur lors de la récupération du groupe pour GID ${gid}`, {
-      error: error.message,
-    });
-    return null;
   }
+
+  return groupMap;
 }
 
 /**
@@ -175,30 +190,19 @@ export async function listUsers(params = {}, callbacks = {}) {
       }
     }
 
-    // Récupérer les noms de groupes pour tous les utilisateurs
-    logger.debug("Récupération des noms de groupes");
-    const uniqueGids = [...new Set(users.map((u) => u.gid))];
-    const groupMap = new Map();
-
-    // Récupérer les groupes en parallèle (limité à 10 à la fois pour éviter la surcharge)
-    const batchSize = 10;
-    for (let i = 0; i < uniqueGids.length; i += batchSize) {
-      const batch = uniqueGids.slice(i, i + batchSize);
-      const groupPromises = batch.map(async (gid) => {
-        const groupName = await getGroupName(gid);
-        return [gid, groupName];
-      });
-      const results = await Promise.all(groupPromises);
-      results.forEach(([gid, groupName]) => {
-        if (groupName) {
-          groupMap.set(gid, groupName);
-        }
-      });
-    }
+    // Récupérer tous les groupes et créer une map GID -> nom de groupe
+    logger.debug("Récupération de tous les groupes");
+    const groupMap = await getAllGroups();
+    logger.debug(`Trouvé ${groupMap.size} groupes`);
 
     // Ajouter les noms de groupes aux utilisateurs
     users.forEach((user) => {
       user.group = groupMap.get(user.gid) || null;
+      if (!user.group) {
+        logger.debug(
+          `Groupe non trouvé pour GID ${user.gid} (utilisateur ${user.username})`
+        );
+      }
     });
 
     logger.info(
