@@ -41,7 +41,8 @@ export async function listUsers(params = {}, callbacks = {}) {
 
     const groupContent = readFileSync("/etc/group", "utf-8");
     const gidToName = new Map();
-    groupContent.split("\n").forEach((line) => {
+    const rawGroupLines = groupContent.split("\n");
+    rawGroupLines.forEach((line) => {
       const [groupName, , gid] = line.split(":");
       if (groupName && gid) gidToName.set(gid.trim(), groupName.trim());
     });
@@ -85,11 +86,11 @@ export async function listUsers(params = {}, callbacks = {}) {
       });
     }
 
-    const uniqueGroups = Array.from(uniqueGroupsSet);
+    const groups = rawGroupLines.filter((line) => line.trim());
     logger.info(`listUsers terminé : ${users.length} utilisateurs trouvés`);
     return {
       users,
-      groups: uniqueGroups,
+      groups,
     };
   } catch (error) {
     logger.error("Erreur dans listUsers", { error: error.message });
