@@ -120,12 +120,28 @@ async function getUserCronJobs(username) {
 
   try {
     // Essayer d'utiliser crontab -l pour récupérer le crontab de l'utilisateur
-    const { stdout, stderr, error } = await executeCommand(
-      `crontab -l -u ${username} 2>/dev/null || echo ""`,
-      { timeout: 5000 }
-    );
+    // Essayer d'abord avec -u (nécessite root), puis sans si on est l'utilisateur
+    let command = `crontab -l -u ${username} 2>/dev/null || echo ""`;
+    let { stdout, stderr, error } = await executeCommand(command, {
+      timeout: 5000,
+    });
 
-    if (error && !stderr.includes("no crontab")) {
+    // Si ça échoue, essayer sans -u si c'est l'utilisateur courant
+    if (error && stderr && !stderr.includes("no crontab")) {
+      logger.debug(`Tentative sans -u pour ${username}`, { error: stderr });
+      command = `crontab -l 2>/dev/null || echo ""`;
+      const result = await executeCommand(command, { timeout: 5000 });
+      stdout = result.stdout;
+      stderr = result.stderr;
+      error = result.error;
+    }
+
+    if (
+      error &&
+      stderr &&
+      !stderr.includes("no crontab") &&
+      !stderr.includes("must be run")
+    ) {
       logger.debug(
         `Erreur lors de la récupération du crontab pour ${username}`,
         {
@@ -135,8 +151,10 @@ async function getUserCronJobs(username) {
       return jobs;
     }
 
-    if (stdout && stdout.trim()) {
+    if (stdout && stdout.trim() && !stdout.includes("no crontab")) {
       const lines = stdout.split("\n");
+      logger.debug(`Trouvé ${lines.length} lignes pour ${username}`);
+
       for (const line of lines) {
         const parsed = parseCronLine(
           line,
@@ -144,6 +162,12 @@ async function getUserCronJobs(username) {
           `/var/spool/cron/crontabs/${username}`
         );
         if (parsed) {
+          logger.debug(
+            `Tâche cron parsée pour ${username}: ${parsed.command.substring(
+              0,
+              50
+            )}...`
+          );
           jobs.push(parsed);
         }
       }
@@ -201,47 +225,61 @@ async function getSystemUsers() {
 }
 
 /**
- * Récupère les tâches cron depuis les fichiers dans /var/spool/cron/crontabs/
+ * Récupère les tâches cron depuis les fichiers dans /var/spool/cron/
+ * Supporte plusieurs formats selon la distribution Linux
  * @returns {Promise<Array<Object>>} Liste des tâches cron utilisateurs
  */
 async function getUserCronJobsFromFiles() {
   const jobs = [];
-  const crontabsDir = "/var/spool/cron/crontabs";
 
-  if (!existsSync(crontabsDir)) {
-    logger.debug("/var/spool/cron/crontabs n'existe pas");
-    return jobs;
-  }
+  // Essayer plusieurs emplacements possibles selon la distribution
+  const possibleDirs = [
+    "/var/spool/cron/crontabs", // Debian/Ubuntu
+    "/var/spool/cron", // CentOS/RHEL
+  ];
 
-  try {
-    const files = readdirSync(crontabsDir);
-    for (const file of files) {
-      // Ignorer les fichiers cachés et spéciaux
-      if (file.startsWith(".")) {
-        continue;
-      }
-
-      const filePath = join(crontabsDir, file);
-      try {
-        const content = readFileSync(filePath, "utf-8");
-        const lines = content.split("\n");
-
-        for (const line of lines) {
-          const parsed = parseCronLine(line, file, filePath);
-          if (parsed) {
-            jobs.push(parsed);
-          }
-        }
-      } catch (error) {
-        logger.debug(`Erreur lors de la lecture de ${filePath}`, {
-          error: error.message,
-        });
-      }
+  for (const crontabsDir of possibleDirs) {
+    if (!existsSync(crontabsDir)) {
+      logger.debug(`${crontabsDir} n'existe pas`);
+      continue;
     }
-  } catch (error) {
-    logger.error("Erreur lors de la lecture de /var/spool/cron/crontabs", {
-      error: error.message,
-    });
+
+    try {
+      const files = readdirSync(crontabsDir);
+      logger.debug(`Lecture de ${files.length} fichiers dans ${crontabsDir}`);
+
+      for (const file of files) {
+        // Ignorer les fichiers cachés et spéciaux
+        if (file.startsWith(".")) {
+          continue;
+        }
+
+        const filePath = join(crontabsDir, file);
+        try {
+          const content = readFileSync(filePath, "utf-8");
+          const lines = content.split("\n");
+          logger.debug(`Lecture de ${filePath}: ${lines.length} lignes`);
+
+          for (const line of lines) {
+            const parsed = parseCronLine(line, file, filePath);
+            if (parsed) {
+              logger.debug(
+                `Tâche cron parsée: ${parsed.command.substring(0, 50)}...`
+              );
+              jobs.push(parsed);
+            }
+          }
+        } catch (error) {
+          logger.debug(`Erreur lors de la lecture de ${filePath}`, {
+            error: error.message,
+          });
+        }
+      }
+    } catch (error) {
+      logger.debug(`Erreur lors de la lecture de ${crontabsDir}`, {
+        error: error.message,
+      });
+    }
   }
 
   return jobs;
@@ -253,34 +291,91 @@ async function getUserCronJobsFromFiles() {
  * @param {Object} [callbacks] - Callbacks (non utilisés pour cette action)
  * @returns {Promise<Array>} Liste de toutes les tâches cron trouvées
  */
+/**
+ * Récupère toutes les tâches cron en utilisant la commande système
+ * @returns {Promise<Array<Object>>} Liste des tâches cron
+ */
+async function getAllCronJobsViaCommand() {
+  const jobs = [];
+
+  try {
+    // Essayer d'utiliser une commande qui liste toutes les tâches cron
+    // Sur certains systèmes, on peut utiliser 'crontab -l' pour root qui liste tout
+    const { stdout, stderr, error } = await executeCommand(
+      `for user in $(cut -f1 -d: /etc/passwd); do crontab -l -u "$user" 2>/dev/null | grep -v "^#" | grep -v "^$" | sed "s|^|$user |"; done`,
+      { timeout: 10000 }
+    );
+
+    if (error && stderr && !stderr.includes("no crontab")) {
+      logger.debug("Erreur lors de la récupération via commande", {
+        error: stderr,
+      });
+      return jobs;
+    }
+
+    if (stdout && stdout.trim()) {
+      const lines = stdout.split("\n");
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        // Format: "user minute hour day month weekday command"
+        const parts = trimmed.split(/\s+/);
+        if (parts.length >= 6) {
+          const [user, ...cronParts] = parts;
+          const cronLine = cronParts.join(" ");
+          const parsed = parseCronLine(
+            cronLine,
+            user,
+            `/var/spool/cron/crontabs/${user}`
+          );
+          if (parsed) {
+            jobs.push(parsed);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    logger.debug("Erreur lors de la récupération via commande", {
+      error: error.message,
+    });
+  }
+
+  return jobs;
+}
+
 export async function listCronJobs(params = {}, callbacks = {}) {
   try {
     validateCronParams("list", params);
 
-    logger.debug("Début de la récupération des tâches cron");
+    logger.info("Début de la récupération des tâches cron");
 
     const allJobs = [];
 
     // 1. Récupérer les tâches cron système depuis /etc/crontab
+    logger.debug("Étape 1: Lecture de /etc/crontab");
     const systemJobs = await getSystemCronJobs();
     allJobs.push(...systemJobs);
-    logger.debug(`Trouvé ${systemJobs.length} tâches cron système`);
+    logger.info(`Trouvé ${systemJobs.length} tâches cron système`);
 
-    // 2. Récupérer les tâches cron utilisateurs depuis /var/spool/cron/crontabs/
+    // 2. Récupérer les tâches cron utilisateurs depuis les fichiers
+    logger.debug("Étape 2: Lecture des fichiers crontab utilisateurs");
     const userJobsFromFiles = await getUserCronJobsFromFiles();
     allJobs.push(...userJobsFromFiles);
-    logger.debug(
+    logger.info(
       `Trouvé ${userJobsFromFiles.length} tâches cron utilisateurs depuis les fichiers`
     );
 
     // 3. Essayer aussi avec crontab -l pour chaque utilisateur (fallback)
+    logger.debug("Étape 3: Utilisation de crontab -l pour chaque utilisateur");
     const users = await getSystemUsers();
-    logger.debug(`Traitement de ${users.length} utilisateurs`);
+    logger.info(`Traitement de ${users.length} utilisateurs`);
 
     for (const username of users) {
       try {
         const userJobs = await getUserCronJobs(username);
         if (userJobs.length > 0) {
+          logger.debug(`Trouvé ${userJobs.length} tâches pour ${username}`);
           // Vérifier si ces jobs ne sont pas déjà dans la liste (éviter les doublons)
           for (const job of userJobs) {
             const isDuplicate = allJobs.some(
@@ -306,14 +401,40 @@ export async function listCronJobs(params = {}, callbacks = {}) {
       }
     }
 
+    // 4. Essayer aussi via commande système (fallback supplémentaire)
+    if (allJobs.length === 0) {
+      logger.debug("Étape 4: Tentative via commande système");
+      const commandJobs = await getAllCronJobsViaCommand();
+      allJobs.push(...commandJobs);
+      logger.info(
+        `Trouvé ${commandJobs.length} tâches cron via commande système`
+      );
+    }
+
     logger.info(
-      `Récupération terminée : ${allJobs.length} tâches cron trouvées`
+      `Récupération terminée : ${allJobs.length} tâches cron trouvées au total`
     );
+
+    // Log de debug pour voir quelques exemples
+    if (allJobs.length > 0) {
+      logger.debug("Exemples de tâches trouvées:", {
+        examples: allJobs.slice(0, 3).map((j) => ({
+          user: j.user,
+          schedule: `${j.schedule.minute} ${j.schedule.hour} ${j.schedule.day} ${j.schedule.month} ${j.schedule.weekday}`,
+          command: j.command.substring(0, 50),
+        })),
+      });
+    } else {
+      logger.warn(
+        "Aucune tâche cron trouvée. Vérifiez les permissions et les emplacements des fichiers."
+      );
+    }
 
     return allJobs;
   } catch (error) {
     logger.error("Erreur lors de la récupération des tâches cron", {
       error: error.message,
+      stack: error.stack,
     });
     throw error;
   }
