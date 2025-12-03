@@ -21,7 +21,7 @@ import { readFileSync } from "fs";
  */
 async function getUserGroups(username) {
   try {
-    // Utiliser id -nG pour obtenir tous les noms de groupes
+    // Utiliser id -nG pour obtenir tous les noms de groupes (exactement comme dans la commande shell)
     // -G : affiche tous les groupes
     // -n : affiche les noms au lieu des numéros
     const { stdout, stderr, error } = await executeCommand(
@@ -29,22 +29,30 @@ async function getUserGroups(username) {
       { timeout: 3000 }
     );
 
-    if (error || !stdout || !stdout.trim()) {
+    if (error) {
+      logger.debug(`Erreur id -nG pour ${username}:`, { error, stderr });
+      return "";
+    }
+
+    if (!stdout || !stdout.trim()) {
+      logger.debug(`Pas de sortie pour id -nG ${username}`);
       return "";
     }
 
     // Format: "group1 group2 group3" (séparés par des espaces)
     // Convertir en "group1,group2,group3" (comme tr ' ' ',')
-    const groups = stdout
-      .trim()
+    const output = stdout.trim();
+    const groups = output
       .split(/\s+/)
       .filter((g) => g && g.trim())
       .join(",");
 
+    logger.debug(`id -nG ${username} = "${output}" -> "${groups}"`);
+
     return groups;
   } catch (error) {
     logger.debug(
-      `Erreur lors de la récupération des groupes pour ${username}`,
+      `Exception lors de la récupération des groupes pour ${username}`,
       {
         error: error.message,
       }
