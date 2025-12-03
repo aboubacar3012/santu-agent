@@ -16,16 +16,17 @@
  */
 
 import { getDocker } from "./manager.js";
-import { logger } from "../../utils/logger.js";
-import { validateDockerParams } from "../../utils/validator.js";
+import { logger } from "../../shared/logger.js";
+import { validateDockerParams } from "./validator.js";
 
 /**
  * Liste les conteneurs Docker
  * @param {Object} params - Paramètres
  * @param {boolean} [params.all=false] - Inclure les conteneurs arrêtés
+ * @param {Object} [callbacks] - Callbacks (non utilisés pour cette action)
  * @returns {Promise<Array>} Liste des conteneurs
  */
-export async function listContainers(params = {}) {
+export async function listContainers(params = {}, callbacks = {}) {
   try {
     const docker = getDocker();
     const { all = true } = validateDockerParams("list", params);
@@ -72,9 +73,10 @@ export async function listContainers(params = {}) {
  * Inspecte un conteneur Docker
  * @param {Object} params - Paramètres
  * @param {string} params.container - Nom ou ID du conteneur
+ * @param {Object} [callbacks] - Callbacks (non utilisés pour cette action)
  * @returns {Promise<Object>} Informations du conteneur
  */
-export async function inspectContainer(params) {
+export async function inspectContainer(params, callbacks = {}) {
   try {
     const docker = getDocker();
     const { container } = validateDockerParams("inspect", params);
@@ -107,9 +109,10 @@ export async function inspectContainer(params) {
  * Démarre un conteneur Docker
  * @param {Object} params - Paramètres
  * @param {string} params.container - Nom ou ID du conteneur
+ * @param {Object} [callbacks] - Callbacks (non utilisés pour cette action)
  * @returns {Promise<Object>} Résultat
  */
-export async function startContainer(params) {
+export async function startContainer(params, callbacks = {}) {
   try {
     const docker = getDocker();
     const { container } = validateDockerParams("start", params);
@@ -130,9 +133,10 @@ export async function startContainer(params) {
  * Arrête un conteneur Docker
  * @param {Object} params - Paramètres
  * @param {string} params.container - Nom ou ID du conteneur
+ * @param {Object} [callbacks] - Callbacks (non utilisés pour cette action)
  * @returns {Promise<Object>} Résultat
  */
-export async function stopContainer(params) {
+export async function stopContainer(params, callbacks = {}) {
   try {
     const docker = getDocker();
     const { container } = validateDockerParams("stop", params);
@@ -153,9 +157,10 @@ export async function stopContainer(params) {
  * Redémarre un conteneur Docker
  * @param {Object} params - Paramètres
  * @param {string} params.container - Nom ou ID du conteneur
+ * @param {Object} [callbacks] - Callbacks (non utilisés pour cette action)
  * @returns {Promise<Object>} Résultat
  */
-export async function restartContainer(params) {
+export async function restartContainer(params, callbacks = {}) {
   try {
     const docker = getDocker();
     const { container } = validateDockerParams("restart", params);
@@ -178,16 +183,17 @@ export async function restartContainer(params) {
  * @param {string} params.container - Nom ou ID du conteneur
  * @param {number} [params.tail=100] - Nombre de lignes à récupérer
  * @param {boolean} [params.follow=false] - Suivre les logs en temps réel
- * @param {Function} [onData] - Callback pour les données de stream
- * @returns {Promise<Object|Stream>} Logs ou stream
+ * @param {Object} [callbacks] - Callbacks pour le streaming
+ * @param {Function} [callbacks.onStream] - Callback pour les données de stream
+ * @returns {Promise<Object>} Logs ou informations de stream
  */
-export async function getContainerLogs(params, onData = null) {
+export async function getContainerLogs(params, callbacks = {}) {
   try {
     const docker = getDocker();
     const { container, tail, follow } = validateDockerParams("logs", params);
     const containerObj = docker.getContainer(container);
 
-    if (follow && onData) {
+    if (follow && callbacks.onStream) {
       // Mode streaming
       const stream = await containerObj.logs({
         follow: true,
@@ -198,7 +204,7 @@ export async function getContainerLogs(params, onData = null) {
       });
 
       stream.on("data", (chunk) => {
-        onData(chunk.toString());
+        callbacks.onStream("stdout", chunk.toString());
       });
 
       stream.on("error", (error) => {
@@ -208,7 +214,23 @@ export async function getContainerLogs(params, onData = null) {
         });
       });
 
-      return { stream, type: "stream" };
+      return {
+        isStreaming: true,
+        initialResponse: {
+          stream: "stdout",
+          mode: "logs.follow",
+        },
+        resource: {
+          type: "docker-logs",
+          cleanup: () => {
+            if (stream?.destroy) {
+              stream.destroy();
+            } else if (stream?.end) {
+              stream.end();
+            }
+          },
+        },
+      };
     } else {
       // Mode one-shot
       const logs = await containerObj.logs({
@@ -232,22 +254,24 @@ export async function getContainerLogs(params, onData = null) {
  * Récupère les statistiques d'un conteneur Docker
  * @param {Object} params - Paramètres
  * @param {string} params.container - Nom ou ID du conteneur
- * @param {Function} [onStats] - Callback pour les statistiques en temps réel
- * @returns {Promise<Object|Stats>} Statistiques ou stream
+ * @param {boolean} [params.stream=false] - Mode streaming
+ * @param {Object} [callbacks] - Callbacks pour le streaming
+ * @param {Function} [callbacks.onStream] - Callback pour les statistiques en temps réel
+ * @returns {Promise<Object>} Statistiques ou informations de stream
  */
-export async function getContainerStats(params, onStats = null) {
+export async function getContainerStats(params, callbacks = {}) {
   try {
     const docker = getDocker();
-    const { container } = validateDockerParams("stats", params);
+    const { container, stream } = validateDockerParams("stats", params);
     const containerObj = docker.getContainer(container);
 
-    if (onStats) {
+    if (stream && callbacks.onStream) {
       // Mode streaming
       const stats = containerObj.stats({ stream: true });
       stats.on("data", (chunk) => {
         try {
           const data = JSON.parse(chunk.toString());
-          onStats({
+          const statsData = {
             cpu: calculateCpuPercent(data),
             memory: {
               usage: data.memory_stats.usage || 0,
@@ -262,7 +286,8 @@ export async function getContainerStats(params, onStats = null) {
             },
             network: data.networks || {},
             blockIO: data.blkio_stats || {},
-          });
+          };
+          callbacks.onStream("stdout", JSON.stringify(statsData));
         } catch (error) {
           logger.error("Erreur lors du parsing des stats", {
             error: error.message,
@@ -277,7 +302,23 @@ export async function getContainerStats(params, onStats = null) {
         });
       });
 
-      return { stats, type: "stream" };
+      return {
+        isStreaming: true,
+        initialResponse: {
+          stream: "stdout",
+          mode: "stats.stream",
+        },
+        resource: {
+          type: "docker-stats",
+          cleanup: () => {
+            if (stats?.destroy) {
+              stats.destroy();
+            } else if (stats?.end) {
+              stats.end();
+            }
+          },
+        },
+      };
     } else {
       // Mode one-shot - récupérer la première donnée du stream
       return new Promise((resolve, reject) => {
@@ -449,9 +490,10 @@ function formatBytes(bytes) {
  * @param {Object} params - Paramètres
  * @param {string} params.container - Nom ou ID du conteneur
  * @param {string|Array} params.command - Commande à exécuter
+ * @param {Object} [callbacks] - Callbacks (non utilisés pour cette action)
  * @returns {Promise<Object>} Résultat de l'exécution
  */
-export async function execContainer(params) {
+export async function execContainer(params, callbacks = {}) {
   try {
     const docker = getDocker();
     const { container, command } = validateDockerParams("exec", params);
@@ -464,7 +506,7 @@ export async function execContainer(params) {
     });
 
     const stream = await exec.start({ hijack: true, stdin: false });
-    
+
     let stdout = "";
     let stderr = "";
 

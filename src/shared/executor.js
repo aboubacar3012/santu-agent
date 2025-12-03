@@ -6,7 +6,7 @@
  * - retourner une signature cohérente (stdout/stderr/error),
  * - masquer les détails d'implémentation aux modules appelants.
  *
- * @module utils/executor
+ * @module shared/executor
  */
 
 import { exec } from "child_process";
@@ -42,4 +42,3 @@ export async function executeCommand(command, options = {}) {
     };
   }
 }
-

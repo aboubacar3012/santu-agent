@@ -1,8 +1,8 @@
 import http from "http";
 import { WebSocketServer } from "ws";
-import { logger } from "../utils/logger.js";
+import { logger } from "../shared/logger.js";
 import { handleMessage } from "./handlers.js";
-import { createError } from "../types/messages.js";
+import { createError } from "../shared/messages.js";
 
 
 const DEFAULT_HEALTHCHECK_PATH = "/healthcheck";

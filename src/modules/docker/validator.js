@@ -1,10 +1,10 @@
 /**
- * Validation et sanitization des commandes reçues via WebSocket.
+ * Validation et sanitization des commandes Docker reçues via WebSocket.
  *
  * Ce module concentre toutes les règles de sécurité applicables aux actions
  * Docker afin d'éviter la duplication de logique dans les handlers.
  *
- * @module utils/validator
+ * @module modules/docker/validator
  */
 
 /**
@@ -28,6 +28,15 @@ const ALLOWED_DOCKER_ACTIONS = [
  */
 export function isValidDockerAction(action) {
   return ALLOWED_DOCKER_ACTIONS.includes(action);
+}
+
+/**
+ * Interface standardisée pour le validator
+ * @param {string} action - Action à valider
+ * @returns {boolean} True si autorisée
+ */
+export function isValidAction(action) {
+  return isValidDockerAction(action);
 }
 
 /**
@@ -55,6 +64,17 @@ export function sanitizeContainerName(containerName) {
  * @throws {Error} Si les paramètres sont invalides
  */
 export function validateDockerParams(action, params) {
+  return validateParams(action, params);
+}
+
+/**
+ * Interface standardisée pour la validation des paramètres
+ * @param {string} action - Action Docker
+ * @param {Object} params - Paramètres
+ * @returns {Object} Paramètres validés
+ * @throws {Error} Si les paramètres sont invalides
+ */
+export function validateParams(action, params) {
   switch (action) {
     case "list":
       return { all: params.all === true || params.all === "true" };
@@ -73,12 +93,13 @@ export function validateDockerParams(action, params) {
           tail: params.tail ? parseInt(params.tail, 10) : 100,
           follow: params.follow === true || params.follow === "true",
         }),
+        ...(action === "stats" && {
+          stream: params.stream === true || params.stream === "true",
+        }),
       };
     case "exec":
       if (!params.container || !params.command) {
-        throw new Error(
-          "Les paramètres 'container' et 'command' sont requis"
-        );
+        throw new Error("Les paramètres 'container' et 'command' sont requis");
       }
       return {
         container: sanitizeContainerName(params.container),
@@ -90,4 +111,3 @@ export function validateDockerParams(action, params) {
       return params;
   }
 }
-

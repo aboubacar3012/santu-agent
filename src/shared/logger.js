@@ -5,7 +5,7 @@
  * d'affichage sans dépendre d'une lib externe. Les messages respectent tous
  * le schéma : `[timestamp] [LEVEL] message {meta}`.
  *
- * @module utils/logger
+ * @module shared/logger
  */
 
 const LOG_LEVELS = {
@@ -31,9 +31,7 @@ const currentLogLevel =
  */
 function formatLog(level, message, meta = {}) {
   const timestamp = new Date().toISOString();
-  const metaStr = Object.keys(meta).length
-    ? ` ${JSON.stringify(meta)}`
-    : "";
+  const metaStr = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : "";
   return `[${timestamp}] [${level.toUpperCase()}] ${message}${metaStr}`;
 }
 
@@ -62,4 +60,3 @@ export const logger = {
     }
   },
 };
-

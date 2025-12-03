@@ -5,7 +5,7 @@
  * un format homogène et facilement sérialisable. Cela simplifie l'ajout de
  * nouveaux types (streams, erreurs, etc.) et centralise la documentation.
  *
- * @module types/messages
+ * @module shared/messages
  */
 
 /**
@@ -75,4 +75,3 @@ export function createError(id, error) {
     error,
   };
 }
-

@@ -11,7 +11,7 @@
  */
 
 import { loadConfig } from "./config/env.js";
-import { logger } from "./utils/logger.js";
+import { logger } from "./shared/logger.js";
 import { createFrontendServer } from "./websocket/server.js";
 import { initDocker } from "./modules/docker/manager.js";
 

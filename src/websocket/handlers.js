@@ -1,28 +1,23 @@
 /**
  * Gestionnaires de messages WebSocket.
  *
- * `handleMessage` agit comme routeur central :
+ * `handleMessage` agit comme routeur central générique :
  * 1. Valide le format du message (présence d'ID/action).
- * 2. Vérifie que l'action appartient au module `docker` et est autorisée.
- * 3. Exécute l'action correspondante dans `modules/docker`.
- * 4. Enregistre/relâche les ressources longues (streams logs/stats).
+ * 2. Parse l'action au format "module.action" et charge le module correspondant.
+ * 3. Vérifie que l'action est autorisée via le validator du module.
+ * 4. Exécute l'action correspondante dans le module.
+ * 5. Enregistre/relâche les ressources longues (streams logs/stats).
  *
  * @module websocket/handlers
  */
 
 import {
-  listContainers,
-  inspectContainer,
-  startContainer,
-  stopContainer,
-  restartContainer,
-  getContainerLogs,
-  getContainerStats,
-  execContainer,
-} from "../modules/docker/actions.js";
-import { createResponse, createStream, createError } from "../types/messages.js";
-import { logger } from "../utils/logger.js";
-import { isValidDockerAction } from "../utils/validator.js";
+  createResponse,
+  createStream,
+  createError,
+} from "../shared/messages.js";
+import { logger } from "../shared/logger.js";
+import { getModule } from "../modules/index.js";
 
 /**
  * Traite un message reçu du frontend
@@ -46,129 +41,93 @@ export async function handleMessage(
   try {
     let isStreamingAction = false;
 
-    // Parser l'action (format: "docker.list", "docker.start", etc.)
-    const [module, actionName] = action.split(".");
+    // Parser l'action (format: "docker.list", "ssh.add", etc.)
+    const [moduleName, actionName] = action.split(".");
 
-    if (module !== "docker") {
+    if (!moduleName || !actionName) {
       sendMessage(
-        createError(id, `Module non supporté: ${module}`)
+        createError(id, `Format d'action invalide. Attendu: "module.action"`)
       );
       return;
     }
 
-    if (!isValidDockerAction(actionName)) {
+    // Charger le module
+    const module = getModule(moduleName);
+    if (!module) {
+      sendMessage(createError(id, `Module non supporté: ${moduleName}`));
+      return;
+    }
+
+    // Vérifier que l'action est autorisée via le validator du module
+    const { validator, actions } = module;
+    if (
+      !validator.isValidAction ||
+      typeof validator.isValidAction !== "function"
+    ) {
       sendMessage(
-        createError(id, `Action Docker non autorisée: ${actionName}`)
+        createError(id, `Module ${moduleName} n'expose pas de validator valide`)
+      );
+      return;
+    }
+
+    if (!validator.isValidAction(actionName)) {
+      sendMessage(
+        createError(
+          id,
+          `Action ${actionName} non autorisée pour le module ${moduleName}`
+        )
       );
       return;
     }
 
     logger.debug("Traitement de l'action", { id, action, params });
 
-    // Router vers la bonne action Docker
-    let result;
-
-    switch (actionName) {
-      case "list":
-        result = await listContainers(params);
-        break;
-
-      case "inspect":
-        result = await inspectContainer(params);
-        break;
-
-      case "start":
-        result = await startContainer(params);
-        break;
-
-      case "stop":
-        result = await stopContainer(params);
-        break;
-
-      case "restart":
-        result = await restartContainer(params);
-        break;
-
-      case "logs": {
-        const { follow } = params;
-        if (follow) {
-          // Mode streaming
-          const logsResult = await getContainerLogs(
-            params,
-            (data) => {
-              sendMessage(createStream(id, "stdout", data));
-            }
-          );
-          registerResource(id, {
-            type: "docker-logs",
-            cleanup: () => {
-              if (logsResult?.stream?.destroy) {
-                logsResult.stream.destroy();
-              } else if (logsResult?.stream?.end) {
-                logsResult.stream.end();
-              }
-            },
-          });
-          isStreamingAction = true;
-          sendMessage(
-            createResponse(id, true, {
-              stream: "stdout",
-              mode: "logs.follow",
-            })
-          );
-          return;
-        } else {
-          // Mode one-shot
-          result = await getContainerLogs(params);
-          result = result.logs;
-        }
-        break;
-      }
-
-      case "stats": {
-        const { stream } = params;
-        if (stream) {
-          // Mode streaming
-          const statsResult = await getContainerStats(
-            params,
-            (stats) => {
-              sendMessage(createStream(id, "stdout", JSON.stringify(stats)));
-            }
-          );
-          registerResource(id, {
-            type: "docker-stats",
-            cleanup: () => {
-              if (statsResult?.stats?.destroy) {
-                statsResult.stats.destroy();
-              } else if (statsResult?.stats?.end) {
-                statsResult.stats.end();
-              }
-            },
-          });
-          isStreamingAction = true;
-          sendMessage(
-            createResponse(id, true, {
-              stream: "stdout",
-              mode: "stats.stream",
-            })
-          );
-          return;
-        } else {
-          // Mode one-shot
-          result = await getContainerStats(params);
-        }
-        break;
-      }
-
-      case "exec":
-        result = await execContainer(params);
-        break;
-
-      default:
-        throw new Error(`Action non implémentée: ${actionName}`);
+    // Valider les paramètres via le validator du module
+    let validatedParams = params;
+    if (
+      validator.validateParams &&
+      typeof validator.validateParams === "function"
+    ) {
+      validatedParams = validator.validateParams(actionName, params);
     }
 
-    // Envoyer la réponse
+    // Exécuter l'action
+    const actionFunction = actions[actionName];
+    if (!actionFunction || typeof actionFunction !== "function") {
+      sendMessage(
+        createError(
+          id,
+          `Action ${actionName} non implémentée dans le module ${moduleName}`
+        )
+      );
+      return;
+    }
+
+    // Gérer les actions avec streaming
+    const result = await actionFunction(validatedParams, {
+      onStream: (streamType, data) => {
+        sendMessage(createStream(id, streamType, data));
+      },
+      onResource: (resource) => {
+        registerResource(id, resource);
+      },
+    });
+
+    // Si l'action retourne un objet avec des informations de streaming
+    if (result && typeof result === "object") {
+      if (result.isStreaming) {
+        isStreamingAction = true;
+        if (result.resource) {
+          registerResource(id, result.resource);
+        }
+        if (result.initialResponse) {
+          sendMessage(createResponse(id, true, result.initialResponse));
+        }
+        return;
+      }
+    }
+
+    // Envoyer la réponse pour les actions non-streaming
     if (!isStreamingAction) {
       registerResource(id, null);
       sendMessage(createResponse(id, true, result));

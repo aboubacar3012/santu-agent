@@ -9,7 +9,7 @@
  */
 
 import Docker from "dockerode";
-import { logger } from "../../utils/logger.js";
+import { logger } from "../../shared/logger.js";
 
 /**
  * Instance Docker globale (lazy-loaded).
