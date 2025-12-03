@@ -128,9 +128,6 @@ export async function listUsers(params = {}, callbacks = {}) {
             home: home || "",
             shell: shell || "",
             comment: gecos || "",
-            group: groupsStr
-              ? groupsStr.split(",").filter((g) => g && g.trim())[0] || null
-              : null, // Premier groupe
           };
         });
 
