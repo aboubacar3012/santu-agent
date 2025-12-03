@@ -15,40 +15,36 @@ import { validateUserParams } from "./validator.js";
 import { readFileSync } from "fs";
 
 /**
- * Récupère les groupes d'un utilisateur avec la commande groups
+ * Récupère les groupes d'un utilisateur avec la commande id -Gn
  * @param {string} username - Nom d'utilisateur
  * @returns {Promise<Array<string>>} Liste des groupes de l'utilisateur
  */
 async function getUserGroups(username) {
   try {
-    // Utiliser groups <username> pour obtenir tous les groupes de l'utilisateur
+    // Utiliser id -Gn <username> pour obtenir tous les noms de groupes
+    // -G : affiche tous les groupes
+    // -n : affiche les noms au lieu des numéros
     const { stdout, stderr, error } = await executeCommand(
-      `groups ${username} 2>/dev/null || echo ""`,
+      `id -Gn ${username} 2>/dev/null || echo ""`,
       { timeout: 3000 }
     );
 
     if (error || !stdout || !stdout.trim()) {
-      logger.debug(`Pas de sortie pour groups ${username}`, {
+      logger.debug(`Pas de sortie pour id -Gn ${username}`, {
         error: stderr || "aucune sortie",
       });
       return [];
     }
 
-    // Format attendu: "username : group1 group2 group3"
-    // Ou parfois: "group1 group2 group3" (sans le username au début)
+    // Format: "group1 group2 group3" (séparés par des espaces)
     const output = stdout.trim();
-    logger.debug(`Sortie de groups pour ${username}: ${output}`);
-
-    const parts = output.split(":");
-    let groupsStr = parts.length > 1 ? parts[1].trim() : parts[0].trim();
+    logger.debug(`Sortie de id -Gn pour ${username}: ${output}`);
 
     // Extraire les groupes (séparés par des espaces)
-    const groups = groupsStr
-      .split(/\s+/)
-      .filter((g) => g && g.trim() && g !== username);
+    const groups = output.split(/\s+/).filter((g) => g && g.trim());
 
     logger.debug(`Groupes parsés pour ${username}:`, { groups });
-    
+
     return groups;
   } catch (error) {
     logger.debug(`Erreur lors de la récupération des groupes pour ${username}`, {
