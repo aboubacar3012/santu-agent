@@ -27,22 +27,27 @@ async function getUserGroups(username) {
       { timeout: 3000 }
     );
 
-    if (error || stderr || !stdout || !stdout.trim()) {
-      logger.debug(`Erreur lors de la récupération des groupes pour ${username}`, {
-        error: stderr,
+    if (error || !stdout || !stdout.trim()) {
+      logger.debug(`Pas de sortie pour groups ${username}`, {
+        error: stderr || "aucune sortie",
       });
       return [];
     }
 
-    // Format: username : group1 group2 group3
-    // Ou parfois: group1 group2 group3 (sans le username au début)
-    const parts = stdout.trim().split(":");
+    // Format attendu: "username : group1 group2 group3"
+    // Ou parfois: "group1 group2 group3" (sans le username au début)
+    const output = stdout.trim();
+    logger.debug(`Sortie de groups pour ${username}: ${output}`);
+
+    const parts = output.split(":");
     let groupsStr = parts.length > 1 ? parts[1].trim() : parts[0].trim();
-    
+
     // Extraire les groupes (séparés par des espaces)
     const groups = groupsStr
       .split(/\s+/)
       .filter((g) => g && g.trim() && g !== username);
+
+    logger.debug(`Groupes parsés pour ${username}:`, { groups });
     
     return groups;
   } catch (error) {
