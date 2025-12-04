@@ -109,16 +109,27 @@ function listManualAptPackages() {
       return listManualPackagesFromStatus();
     }
 
+    console.log(
+      `Lecture de /var/lib/apt/extended_states (${content.length} caractères)`
+    );
+
     const packages = [];
     let currentPackage = null;
 
     for (const line of content.split("\n")) {
       const cleaned = line.trim();
-      if (!cleaned) continue;
+      if (!cleaned) {
+        // Fin d'un bloc package
+        if (currentPackage && currentPackage.manual) {
+          packages.push(currentPackage.name);
+        }
+        currentPackage = null;
+        continue;
+      }
 
       if (cleaned.startsWith("Package:")) {
-        if (currentPackage) {
-          packages.push(currentPackage);
+        if (currentPackage && currentPackage.manual) {
+          packages.push(currentPackage.name);
         }
         currentPackage = {
           name: cleaned.replace("Package:", "").trim(),
@@ -134,14 +145,19 @@ function listManualAptPackages() {
       }
     }
 
-    if (currentPackage) {
-      packages.push(currentPackage);
+    // Dernier package
+    if (currentPackage && currentPackage.manual) {
+      packages.push(currentPackage.name);
     }
 
-    return packages
-      .filter((pkg) => pkg.manual)
-      .map((pkg) => pkg.name)
-      .sort();
+    console.log(
+      `Packages manuels trouvés depuis extended_states: ${packages.length}`
+    );
+    if (packages.length > 0) {
+      console.log(`Premiers packages: ${packages.slice(0, 10).join(", ")}`);
+    }
+
+    return packages.sort();
   } catch (error) {
     logger.error("Erreur lors de la lecture des packages manuels", {
       error: error.message,
@@ -154,6 +170,7 @@ function listManualAptPackages() {
 /**
  * Fallback : lire les packages depuis /var/lib/dpkg/status
  * Les packages avec Status: install ok installed et sans Auto-Installed: 1 sont considérés comme manuels
+ * Si Auto-Installed n'existe pas, le package est considéré comme manuel par défaut
  */
 function listManualPackagesFromStatus() {
   try {
@@ -170,20 +187,29 @@ function listManualPackagesFromStatus() {
       return [];
     }
 
+    console.log(
+      `Lecture de /var/lib/dpkg/status (${content.length} caractères)`
+    );
+
     const packages = [];
     let currentPackage = null;
     let isInstalled = false;
+    let hasAutoInstalled = false; // Indique si le champ Auto-Installed existe
     let isAutoInstalled = false;
 
     for (const line of content.split("\n")) {
       const cleaned = line.trim();
       if (!cleaned) {
         // Fin d'un bloc package
-        if (currentPackage && isInstalled && !isAutoInstalled) {
-          packages.push(currentPackage);
+        // Un package est manuel s'il est installé ET (pas de champ Auto-Installed OU Auto-Installed: 0)
+        if (currentPackage && isInstalled) {
+          if (!hasAutoInstalled || !isAutoInstalled) {
+            packages.push(currentPackage);
+          }
         }
         currentPackage = null;
         isInstalled = false;
+        hasAutoInstalled = false;
         isAutoInstalled = false;
         continue;
       }
@@ -193,19 +219,28 @@ function listManualPackagesFromStatus() {
       } else if (cleaned.startsWith("Status:")) {
         isInstalled = cleaned.includes("install ok installed");
       } else if (cleaned.startsWith("Auto-Installed:")) {
+        hasAutoInstalled = true;
         isAutoInstalled = cleaned.includes("1");
       }
     }
 
     // Dernier package
-    if (currentPackage && isInstalled && !isAutoInstalled) {
-      packages.push(currentPackage);
+    if (currentPackage && isInstalled) {
+      if (!hasAutoInstalled || !isAutoInstalled) {
+        packages.push(currentPackage);
+      }
+    }
+
+    console.log(`Packages manuels trouvés depuis status: ${packages.length}`);
+    if (packages.length > 0) {
+      console.log(`Premiers packages: ${packages.slice(0, 10).join(", ")}`);
     }
 
     return packages.sort();
   } catch (error) {
     logger.error("Erreur lors de la lecture de /var/lib/dpkg/status", {
       error: error.message,
+      stack: error.stack,
     });
     return [];
   }
