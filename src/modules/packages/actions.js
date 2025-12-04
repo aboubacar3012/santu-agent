@@ -88,91 +88,10 @@ function detectPackageManager() {
 }
 
 /**
- * Lit les packages installés manuellement depuis /var/lib/apt/extended_states
- * Ce fichier contient les packages marqués comme manuels (installés par l'utilisateur)
+ * Lit TOUS les packages installés depuis /var/lib/dpkg/status
+ * Retourne tous les packages avec Status: install ok installed
  */
-function listManualAptPackages() {
-  try {
-    const extendedStatesPath = "/var/lib/apt/extended_states";
-    if (!existsSync(extendedStatesPath)) {
-      console.log("Fichier extended_states non trouvé, tentative avec status");
-      // Fallback : lire depuis /var/lib/dpkg/status et filtrer les packages non-automatiques
-      return listManualPackagesFromStatus();
-    }
-
-    const content = readFileSync(extendedStatesPath, "utf-8");
-
-    if (!content || typeof content !== "string") {
-      console.log(
-        "Contenu de extended_states invalide ou vide, fallback vers status"
-      );
-      return listManualPackagesFromStatus();
-    }
-
-    console.log(
-      `Lecture de /var/lib/apt/extended_states (${content.length} caractères)`
-    );
-
-    const packages = [];
-    let currentPackage = null;
-
-    for (const line of content.split("\n")) {
-      const cleaned = line.trim();
-      if (!cleaned) {
-        // Fin d'un bloc package
-        if (currentPackage && currentPackage.manual) {
-          packages.push(currentPackage.name);
-        }
-        currentPackage = null;
-        continue;
-      }
-
-      if (cleaned.startsWith("Package:")) {
-        if (currentPackage && currentPackage.manual) {
-          packages.push(currentPackage.name);
-        }
-        currentPackage = {
-          name: cleaned.replace("Package:", "").trim(),
-          manual: false,
-        };
-      } else if (cleaned.startsWith("Architecture:")) {
-        // Ignorer
-      } else if (cleaned.startsWith("Auto-Installed:")) {
-        const value = cleaned.replace("Auto-Installed:", "").trim();
-        if (currentPackage) {
-          currentPackage.manual = value === "0";
-        }
-      }
-    }
-
-    // Dernier package
-    if (currentPackage && currentPackage.manual) {
-      packages.push(currentPackage.name);
-    }
-
-    console.log(
-      `Packages manuels trouvés depuis extended_states: ${packages.length}`
-    );
-    if (packages.length > 0) {
-      console.log(`Premiers packages: ${packages.slice(0, 10).join(", ")}`);
-    }
-
-    return packages.sort();
-  } catch (error) {
-    logger.error("Erreur lors de la lecture des packages manuels", {
-      error: error.message,
-    });
-    // Fallback vers status
-    return listManualPackagesFromStatus();
-  }
-}
-
-/**
- * Fallback : lire les packages depuis /var/lib/dpkg/status
- * Les packages avec Status: install ok installed et sans Auto-Installed: 1 sont considérés comme manuels
- * Si Auto-Installed n'existe pas, le package est considéré comme manuel par défaut
- */
-function listManualPackagesFromStatus() {
+function listAllAptPackages() {
   try {
     const statusPath = "/var/lib/dpkg/status";
     if (!existsSync(statusPath)) {
@@ -194,23 +113,17 @@ function listManualPackagesFromStatus() {
     const packages = [];
     let currentPackage = null;
     let isInstalled = false;
-    let hasAutoInstalled = false; // Indique si le champ Auto-Installed existe
-    let isAutoInstalled = false;
 
     for (const line of content.split("\n")) {
       const cleaned = line.trim();
       if (!cleaned) {
         // Fin d'un bloc package
-        // Un package est manuel s'il est installé ET (pas de champ Auto-Installed OU Auto-Installed: 0)
+        // Ajouter tous les packages installés (peu importe s'ils sont manuels ou automatiques)
         if (currentPackage && isInstalled) {
-          if (!hasAutoInstalled || !isAutoInstalled) {
-            packages.push(currentPackage);
-          }
+          packages.push(currentPackage);
         }
         currentPackage = null;
         isInstalled = false;
-        hasAutoInstalled = false;
-        isAutoInstalled = false;
         continue;
       }
 
@@ -218,20 +131,15 @@ function listManualPackagesFromStatus() {
         currentPackage = cleaned.replace("Package:", "").trim();
       } else if (cleaned.startsWith("Status:")) {
         isInstalled = cleaned.includes("install ok installed");
-      } else if (cleaned.startsWith("Auto-Installed:")) {
-        hasAutoInstalled = true;
-        isAutoInstalled = cleaned.includes("1");
       }
     }
 
     // Dernier package
     if (currentPackage && isInstalled) {
-      if (!hasAutoInstalled || !isAutoInstalled) {
-        packages.push(currentPackage);
-      }
+      packages.push(currentPackage);
     }
 
-    console.log(`Packages manuels trouvés depuis status: ${packages.length}`);
+    console.log(`Packages installés trouvés: ${packages.length}`);
     if (packages.length > 0) {
       console.log(`Premiers packages: ${packages.slice(0, 10).join(", ")}`);
     }
@@ -294,12 +202,12 @@ function getAptPackageDetails(pkgName) {
     }
 
     const content = readFileSync(statusPath, "utf-8");
-    
+
     if (!content || typeof content !== "string") {
       console.log(`Contenu de status invalide ou vide pour ${pkgName}`);
       return null;
     }
-    
+
     let version = "unknown";
     let size = "0";
 
@@ -391,8 +299,8 @@ function getAptPackageDetails(pkgName) {
 }
 
 function listAptPackages() {
-  const packages = listManualAptPackages();
-  logger.info(`Packages utilisateur détectés (APT): ${packages.length}`);
+  const packages = listAllAptPackages();
+  logger.info(`Packages installés détectés (APT): ${packages.length}`);
 
   const details = [];
 
