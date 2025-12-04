@@ -254,3 +254,128 @@ export async function listUfwRules(params = {}, callbacks = {}) {
   }
 }
 
+/**
+ * Nettoie une commande UFW en retirant "sudo" si présent
+ * @param {string} command - Commande à nettoyer
+ * @returns {string} Commande nettoyée
+ */
+function cleanUfwCommand(command) {
+  // Retirer "sudo" si présent au début
+  return command.replace(/^sudo\s+/i, "").trim();
+}
+
+/**
+ * Prépare une commande UFW pour l'exécution via nsenter avec gestion des confirmations
+ * @param {string} command - Commande UFW à préparer
+ * @returns {string} Commande préparée pour nsenter
+ */
+function prepareUfwCommand(command) {
+  const cleaned = cleanUfwCommand(command);
+  
+  // Pour les commandes "delete", ajouter --force pour éviter les confirmations
+  if (cleaned.toLowerCase().includes("delete")) {
+    // Si --force n'est pas déjà présent, l'ajouter après "ufw"
+    if (!cleaned.toLowerCase().includes("--force")) {
+      return cleaned.replace(/^ufw\s+/i, "ufw --force ");
+    }
+  }
+  
+  return cleaned;
+}
+
+/**
+ * Applique des règles UFW en exécutant une série de commandes
+ * @param {Object} params - Paramètres contenant les commandes à exécuter
+ * @param {string[]} params.commands - Tableau de commandes UFW à exécuter
+ * @param {Object} [callbacks] - Callbacks (non utilisés pour cette action)
+ * @returns {Promise<Object>} Résultats de l'exécution de chaque commande
+ */
+export async function applyUfwRules(params = {}, callbacks = {}) {
+  try {
+    validateUfwParams("apply", params);
+
+    const { commands } = params;
+    logger.debug("Début de l'application des règles UFW", {
+      commandCount: commands.length,
+    });
+
+    const results = [];
+
+    // Exécuter chaque commande séquentiellement
+    for (let i = 0; i < commands.length; i++) {
+      const originalCommand = commands[i];
+      const preparedCommand = prepareUfwCommand(originalCommand);
+
+      logger.debug(`Exécution de la commande ${i + 1}/${commands.length}`, {
+        original: originalCommand,
+        prepared: preparedCommand,
+      });
+
+      try {
+        // Utiliser nsenter pour exécuter dans l'espace de noms de l'hôte
+        // Échapper les guillemets simples dans la commande pour sh -c
+        const escapedCommand = preparedCommand.replace(/'/g, "'\"'\"'");
+        const nsenterCommand = `nsenter -t 1 -m -u -i -n -p -- sh -c '${escapedCommand}'`;
+
+        const result = await executeCommand(nsenterCommand, {
+          timeout: 30000, // 30 secondes par commande
+        });
+
+        results.push({
+          command: originalCommand,
+          success: !result.error,
+          stdout: result.stdout || "",
+          stderr: result.stderr || "",
+          error: result.error ? result.error.message || String(result.error) : null,
+        });
+
+        // Si une commande échoue, logger mais continuer avec les autres
+        if (result.error) {
+          logger.warn(`La commande ${i + 1} a échoué`, {
+            command: originalCommand,
+            error: result.error.message || result.error,
+            stderr: result.stderr,
+          });
+        } else {
+          logger.debug(`Commande ${i + 1} exécutée avec succès`, {
+            command: originalCommand,
+            stdout: result.stdout?.substring(0, 200), // Limiter la taille du log
+          });
+        }
+      } catch (error) {
+        // Erreur lors de l'exécution de la commande
+        logger.error(`Erreur lors de l'exécution de la commande ${i + 1}`, {
+          command: originalCommand,
+          error: error.message,
+        });
+
+        results.push({
+          command: originalCommand,
+          success: false,
+          stdout: "",
+          stderr: "",
+          error: error.message || String(error),
+        });
+      }
+    }
+
+    // Compter les succès et échecs
+    const successCount = results.filter((r) => r.success).length;
+    const failureCount = results.filter((r) => !r.success).length;
+
+    logger.info(
+      `Application des règles UFW terminée : ${successCount} succès, ${failureCount} échecs`
+    );
+
+    return {
+      success: failureCount === 0, // Succès global si toutes les commandes ont réussi
+      results,
+    };
+  } catch (error) {
+    logger.error("Erreur lors de l'application des règles UFW", {
+      error: error.message,
+    });
+    throw error;
+  }
+}
+
