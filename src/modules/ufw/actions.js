@@ -152,21 +152,45 @@ export async function listUfwRules(params = {}, callbacks = {}) {
 
     logger.debug("Début de la récupération des règles UFW");
 
-    // Exécuter la commande sudo ufw status numbered
-    const { stdout, stderr, error } = await executeCommand(
-      "sudo ufw status numbered",
-      { timeout: 10000 }
-    );
+    // Le conteneur s'exécute déjà en root (privileged: true), donc pas besoin de sudo
+    // Essayer d'abord sans sudo, puis avec sudo si nécessaire
+    let stdout, stderr, error;
+
+    // Essayer sans sudo d'abord (le conteneur est déjà root)
+    const result = await executeCommand("ufw status numbered", {
+      timeout: 10000,
+    });
+
+    stdout = result.stdout;
+    stderr = result.stderr;
+    error = result.error;
+
+    // Si erreur liée à "command not found" pour ufw, essayer avec le chemin complet
+    if (error && stderr && stderr.includes("ufw: not found")) {
+      logger.debug("Tentative avec le chemin complet /usr/sbin/ufw");
+      const resultWithPath = await executeCommand(
+        "/usr/sbin/ufw status numbered",
+        {
+          timeout: 10000,
+        }
+      );
+      stdout = resultWithPath.stdout;
+      stderr = resultWithPath.stderr;
+      error = resultWithPath.error;
+    }
 
     if (error) {
       // Vérifier si UFW n'est pas installé
       if (
         stderr &&
         (stderr.includes("ufw: command not found") ||
-          stderr.includes("ufw: not found"))
+          stderr.includes("ufw: not found") ||
+          stderr.includes("/usr/sbin/ufw: not found"))
       ) {
-        logger.error("UFW n'est pas installé sur ce système");
-        throw new Error("UFW n'est pas installé sur ce système");
+        logger.error("UFW n'est pas installé sur ce système ou non accessible");
+        throw new Error(
+          "UFW n'est pas installé sur ce système ou non accessible"
+        );
       }
 
       logger.error("Erreur lors de l'exécution de la commande ufw status", {
@@ -174,7 +198,9 @@ export async function listUfwRules(params = {}, callbacks = {}) {
         stderr,
       });
       throw new Error(
-        `Erreur lors de la récupération des règles UFW: ${stderr || error.message || error}`
+        `Erreur lors de la récupération des règles UFW: ${
+          stderr || error.message || error
+        }`
       );
     }
 
