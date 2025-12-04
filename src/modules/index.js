@@ -14,6 +14,7 @@ import * as sshModule from "./ssh/index.js";
 import * as cronModule from "./cron/index.js";
 import * as userModule from "./user/index.js";
 import * as packagesModule from "./packages/index.js";
+import * as metadataModule from "./metadata/index.js";
 import { logger } from "../shared/logger.js";
 
 /**
@@ -122,6 +123,22 @@ try {
   logger.info("Module Packages enregistré avec succès");
 } catch (error) {
   logger.error("Erreur lors de l'enregistrement du module Packages", {
+    error: error.message,
+    stack: error.stack,
+  });
+  throw error;
+}
+
+try {
+  logger.debug("Tentative d'enregistrement du module Metadata", {
+    metadataModule,
+    hasActions: !!metadataModule.actions,
+    hasValidator: !!metadataModule.validator,
+  });
+  registerModule("metadata", metadataModule);
+  logger.info("Module Metadata enregistré avec succès");
+} catch (error) {
+  logger.error("Erreur lors de l'enregistrement du module Metadata", {
     error: error.message,
     stack: error.stack,
   });
