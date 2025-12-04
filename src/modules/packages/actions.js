@@ -5,23 +5,55 @@ import { validatePackagesParams } from "./validator.js";
 
 const SUPPORTED_MANAGERS = ["apt"];
 
-async function parseOsRelease() {
+function parseOsRelease() {
   try {
+    const osReleasePath = "/etc/os-release";
+
+    // Vérifier que le fichier existe
+    if (!existsSync(osReleasePath)) {
+      logger.error("Fichier /etc/os-release non trouvé (non monté ?)");
+      return {};
+    }
+
     // Lire /etc/os-release directement depuis le système de fichiers monté
-    const content = readFileSync("/etc/os-release", "utf-8");
+    const content = readFileSync(osReleasePath, "utf-8");
+    logger.debug("Contenu de /etc/os-release lu", {
+      length: content.length,
+      preview: content.substring(0, 200),
+    });
+
     const lines = content.split("\n");
     const data = {};
+
     for (const line of lines) {
       const cleaned = line.trim();
       if (!cleaned || cleaned.startsWith("#")) continue;
-      const [key, value] = cleaned.split("=");
-      if (!key || typeof value === "undefined") continue;
-      data[key] = value.replace(/^"(.*)"$/, "$1");
+
+      const equalIndex = cleaned.indexOf("=");
+      if (equalIndex === -1) continue;
+
+      const key = cleaned.substring(0, equalIndex).trim();
+      let value = cleaned.substring(equalIndex + 1).trim();
+
+      // Enlever les guillemets si présents
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+
+      if (key && value) {
+        data[key] = value;
+      }
     }
+
+    logger.debug("Données parsées depuis /etc/os-release", data);
     return data;
   } catch (error) {
-    logger.debug("Impossible de lire /etc/os-release", {
+    logger.error("Erreur lors de la lecture de /etc/os-release", {
       error: error.message,
+      stack: error.stack,
     });
     return {};
   }
