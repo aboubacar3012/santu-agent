@@ -124,6 +124,7 @@ function listManualAptPackages() {
     let totalParsed = 0;
     let manualCount = 0;
     let autoCount = 0;
+    let samplePackages = []; // Pour logger quelques exemples
 
     for (const line of lines) {
       const cleaned = line.trim();
@@ -134,6 +135,13 @@ function listManualAptPackages() {
           if (currentPackage.manual) {
             manualCount++;
             packages.push(currentPackage.name);
+            // Logger les premiers packages manuels pour debug
+            if (samplePackages.length < 5) {
+              samplePackages.push({
+                name: currentPackage.name,
+                autoInstalled: currentPackage.autoInstalledValue,
+              });
+            }
           } else {
             autoCount++;
           }
@@ -148,6 +156,12 @@ function listManualAptPackages() {
           if (currentPackage.manual) {
             manualCount++;
             packages.push(currentPackage.name);
+            if (samplePackages.length < 5) {
+              samplePackages.push({
+                name: currentPackage.name,
+                autoInstalled: currentPackage.autoInstalledValue,
+              });
+            }
           } else {
             autoCount++;
           }
@@ -155,12 +169,14 @@ function listManualAptPackages() {
         currentPackage = {
           name: cleaned.replace("Package:", "").trim(),
           manual: false,
+          autoInstalledValue: null,
         };
       } else if (cleaned.startsWith("Architecture:")) {
         // Ignorer
       } else if (cleaned.startsWith("Auto-Installed:")) {
         const value = cleaned.replace("Auto-Installed:", "").trim();
         if (currentPackage) {
+          currentPackage.autoInstalledValue = value;
           currentPackage.manual = value === "0";
         }
       }
@@ -172,6 +188,12 @@ function listManualAptPackages() {
       if (currentPackage.manual) {
         manualCount++;
         packages.push(currentPackage.name);
+        if (samplePackages.length < 5) {
+          samplePackages.push({
+            name: currentPackage.name,
+            autoInstalled: currentPackage.autoInstalledValue,
+          });
+        }
       } else {
         autoCount++;
       }
@@ -180,8 +202,11 @@ function listManualAptPackages() {
     logger.info(
       `Parsing terminé: ${totalParsed} packages parsés, ${manualCount} manuels, ${autoCount} automatiques`
     );
+    logger.debug("Exemples de packages manuels:", samplePackages);
     if (packages.length > 0) {
-      logger.debug(`Premiers packages manuels: ${packages.slice(0, 10).join(", ")}`);
+      logger.debug(
+        `Premiers packages manuels: ${packages.slice(0, 10).join(", ")}`
+      );
     }
 
     return packages.sort();
