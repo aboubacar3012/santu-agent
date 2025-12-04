@@ -1,3 +1,4 @@
+import { readFileSync, existsSync, statSync } from "fs";
 import { logger } from "../../shared/logger.js";
 import { executeCommand } from "../../shared/executor.js";
 import { validatePackagesParams } from "./validator.js";
@@ -6,22 +7,9 @@ const SUPPORTED_MANAGERS = ["apt"];
 
 async function parseOsRelease() {
   try {
-    // Utiliser une commande shell pour lire /etc/os-release sur le serveur hôte
-    // au lieu de le lire depuis le conteneur Alpine
-    const { stdout, stderr, error } = await executeCommand(
-      "cat /etc/os-release 2>/dev/null || echo ''",
-      { timeout: 3000 }
-    );
-
-    if (error || !stdout || !stdout.trim()) {
-      logger.debug("Impossible de lire /etc/os-release via commande shell", {
-        error: error?.message,
-        stderr,
-      });
-      return {};
-    }
-
-    const lines = stdout.split("\n");
+    // Lire /etc/os-release directement depuis le système de fichiers monté
+    const content = readFileSync("/etc/os-release", "utf-8");
+    const lines = content.split("\n");
     const data = {};
     for (const line of lines) {
       const cleaned = line.trim();
@@ -32,15 +20,15 @@ async function parseOsRelease() {
     }
     return data;
   } catch (error) {
-    logger.debug("Erreur lors de la lecture de /etc/os-release", {
+    logger.debug("Impossible de lire /etc/os-release", {
       error: error.message,
     });
     return {};
   }
 }
 
-async function detectPackageManager() {
-  const osInfo = await parseOsRelease();
+function detectPackageManager() {
+  const osInfo = parseOsRelease();
   const id = (osInfo.ID || "").toLowerCase();
   const idLike = (osInfo.ID_LIKE || "").toLowerCase();
 
@@ -61,28 +49,114 @@ async function detectPackageManager() {
   );
 }
 
-async function runCommand(command) {
-  const { stdout, stderr, error } = await executeCommand(command, {
-    timeout: 5000,
-  });
-  if (error) {
-    throw new Error(
-      `Erreur lors de l'exécution de "${command}": ${stderr || error.message}`
-    );
+/**
+ * Lit les packages installés manuellement depuis /var/lib/apt/extended_states
+ * Ce fichier contient les packages marqués comme manuels (installés par l'utilisateur)
+ */
+function listManualAptPackages() {
+  try {
+    const extendedStatesPath = "/var/lib/apt/extended_states";
+    if (!existsSync(extendedStatesPath)) {
+      logger.debug("Fichier extended_states non trouvé, tentative avec status");
+      // Fallback : lire depuis /var/lib/dpkg/status et filtrer les packages non-automatiques
+      return listManualPackagesFromStatus();
+    }
+
+    const content = readFileSync(extendedStatesPath, "utf-8");
+    const packages = [];
+    let currentPackage = null;
+
+    for (const line of content.split("\n")) {
+      const cleaned = line.trim();
+      if (!cleaned) continue;
+
+      if (cleaned.startsWith("Package:")) {
+        if (currentPackage) {
+          packages.push(currentPackage);
+        }
+        currentPackage = {
+          name: cleaned.replace("Package:", "").trim(),
+          manual: false,
+        };
+      } else if (cleaned.startsWith("Architecture:")) {
+        // Ignorer
+      } else if (cleaned.startsWith("Auto-Installed:")) {
+        const value = cleaned.replace("Auto-Installed:", "").trim();
+        if (currentPackage) {
+          currentPackage.manual = value === "0";
+        }
+      }
+    }
+
+    if (currentPackage) {
+      packages.push(currentPackage);
+    }
+
+    return packages
+      .filter((pkg) => pkg.manual)
+      .map((pkg) => pkg.name)
+      .sort();
+  } catch (error) {
+    logger.error("Erreur lors de la lecture des packages manuels", {
+      error: error.message,
+    });
+    // Fallback vers status
+    return listManualPackagesFromStatus();
   }
-  return stdout.trim();
 }
 
-async function listManualAptPackages() {
-  // Utiliser le chemin complet vers apt-mark sur le serveur hôte
-  const output = await runCommand(
-    "/usr/bin/apt-mark showmanual 2>/dev/null || /bin/apt-mark showmanual 2>/dev/null || apt-mark showmanual"
-  );
-  return output
-    .split("\n")
-    .map((name) => name.trim())
-    .filter(Boolean)
-    .sort();
+/**
+ * Fallback : lire les packages depuis /var/lib/dpkg/status
+ * Les packages avec Status: install ok installed et sans Auto-Installed: 1 sont considérés comme manuels
+ */
+function listManualPackagesFromStatus() {
+  try {
+    const statusPath = "/var/lib/dpkg/status";
+    if (!existsSync(statusPath)) {
+      logger.error("Fichier /var/lib/dpkg/status non trouvé");
+      return [];
+    }
+
+    const content = readFileSync(statusPath, "utf-8");
+    const packages = [];
+    let currentPackage = null;
+    let isInstalled = false;
+    let isAutoInstalled = false;
+
+    for (const line of content.split("\n")) {
+      const cleaned = line.trim();
+      if (!cleaned) {
+        // Fin d'un bloc package
+        if (currentPackage && isInstalled && !isAutoInstalled) {
+          packages.push(currentPackage);
+        }
+        currentPackage = null;
+        isInstalled = false;
+        isAutoInstalled = false;
+        continue;
+      }
+
+      if (cleaned.startsWith("Package:")) {
+        currentPackage = cleaned.replace("Package:", "").trim();
+      } else if (cleaned.startsWith("Status:")) {
+        isInstalled = cleaned.includes("install ok installed");
+      } else if (cleaned.startsWith("Auto-Installed:")) {
+        isAutoInstalled = cleaned.includes("1");
+      }
+    }
+
+    // Dernier package
+    if (currentPackage && isInstalled && !isAutoInstalled) {
+      packages.push(currentPackage);
+    }
+
+    return packages.sort();
+  } catch (error) {
+    logger.error("Erreur lors de la lecture de /var/lib/dpkg/status", {
+      error: error.message,
+    });
+    return [];
+  }
 }
 
 function formatSizeFromKb(sizeKb) {
@@ -100,32 +174,16 @@ function formatSizeFromKb(sizeKb) {
   return `${size} KB`;
 }
 
-async function getInstallDate(pkgName) {
+function getInstallDate(pkgName) {
   try {
     const infoFile = `/var/lib/dpkg/info/${pkgName}.list`;
-    // Utiliser stat via commande shell pour accéder au fichier sur le serveur hôte
-    const { stdout, stderr, error } = await executeCommand(
-      `stat -c %Y ${infoFile} 2>/dev/null || echo ''`,
-      { timeout: 2000 }
-    );
-
-    if (error || !stdout || !stdout.trim()) {
-      logger.debug(
-        `Impossible de récupérer la date d'installation pour ${pkgName}`,
-        {
-          error: error?.message,
-          stderr,
-        }
-      );
+    if (!existsSync(infoFile)) {
+      logger.debug(`Fichier .list non trouvé pour ${pkgName}`);
       return null;
     }
 
-    const timestamp = parseInt(stdout.trim(), 10);
-    if (isNaN(timestamp)) {
-      return null;
-    }
-
-    return new Date(timestamp * 1000).toISOString();
+    const stats = statSync(infoFile);
+    return new Date(stats.mtimeMs).toISOString();
   } catch (error) {
     logger.debug(
       `Impossible de récupérer la date d'installation pour ${pkgName}`,
@@ -137,16 +195,93 @@ async function getInstallDate(pkgName) {
   }
 }
 
-async function getAptPackageDetails(pkgName) {
+/**
+ * Lit les détails d'un package depuis /var/lib/dpkg/status
+ */
+function getAptPackageDetails(pkgName) {
   try {
-    // Utiliser le chemin complet vers dpkg-query sur le serveur hôte
-    const version = await runCommand(
-      `/usr/bin/dpkg-query -W -f='${"${Version}"}' ${pkgName} 2>/dev/null || /bin/dpkg-query -W -f='${"${Version}"}' ${pkgName} 2>/dev/null || dpkg-query -W -f='${"${Version}"}' ${pkgName}`
-    );
-    const size = await runCommand(
-      `/usr/bin/dpkg-query -W -f='${"${Installed-Size}"}' ${pkgName} 2>/dev/null || /bin/dpkg-query -W -f='${"${Installed-Size}"}' ${pkgName} 2>/dev/null || dpkg-query -W -f='${"${Installed-Size}"}' ${pkgName}`
-    );
-    const installedDate = await getInstallDate(pkgName);
+    const statusPath = "/var/lib/dpkg/status";
+    if (!existsSync(statusPath)) {
+      logger.debug(`Fichier status non trouvé pour ${pkgName}`);
+      return null;
+    }
+
+    const content = readFileSync(statusPath, "utf-8");
+    let version = "unknown";
+    let size = "0";
+
+    // Parser le fichier status pour trouver le package
+    const lines = content.split("\n");
+    let inPackage = false;
+    let packageBlock = [];
+
+    for (const line of lines) {
+      const cleaned = line.trim();
+      if (!cleaned) {
+        // Fin d'un bloc
+        if (inPackage) {
+          // Parser le bloc
+          const blockText = packageBlock.join("\n");
+          if (blockText.includes(`Package: ${pkgName}`)) {
+            // Extraire version
+            const versionMatch = blockText.match(/Version:\s*(.+)/);
+            if (versionMatch) {
+              version = versionMatch[1].trim();
+            }
+
+            // Extraire taille
+            const sizeMatch = blockText.match(/Installed-Size:\s*(.+)/);
+            if (sizeMatch) {
+              size = sizeMatch[1].trim();
+            }
+            break;
+          }
+          inPackage = false;
+          packageBlock = [];
+        }
+        continue;
+      }
+
+      if (cleaned.startsWith("Package:")) {
+        if (inPackage) {
+          // Nouveau package, parser l'ancien
+          const blockText = packageBlock.join("\n");
+          if (blockText.includes(`Package: ${pkgName}`)) {
+            const versionMatch = blockText.match(/Version:\s*(.+)/);
+            if (versionMatch) {
+              version = versionMatch[1].trim();
+            }
+            const sizeMatch = blockText.match(/Installed-Size:\s*(.+)/);
+            if (sizeMatch) {
+              size = sizeMatch[1].trim();
+            }
+            break;
+          }
+          packageBlock = [];
+        }
+        inPackage = true;
+        packageBlock.push(cleaned);
+      } else if (inPackage) {
+        packageBlock.push(cleaned);
+      }
+    }
+
+    // Vérifier le dernier bloc si nécessaire
+    if (inPackage && packageBlock.length > 0) {
+      const blockText = packageBlock.join("\n");
+      if (blockText.includes(`Package: ${pkgName}`)) {
+        const versionMatch = blockText.match(/Version:\s*(.+)/);
+        if (versionMatch) {
+          version = versionMatch[1].trim();
+        }
+        const sizeMatch = blockText.match(/Installed-Size:\s*(.+)/);
+        if (sizeMatch) {
+          size = sizeMatch[1].trim();
+        }
+      }
+    }
+
+    const installedDate = getInstallDate(pkgName);
 
     return {
       name: pkgName,
@@ -162,14 +297,14 @@ async function getAptPackageDetails(pkgName) {
   }
 }
 
-async function listAptPackages() {
-  const packages = await listManualAptPackages();
+function listAptPackages() {
+  const packages = listManualAptPackages();
   logger.info(`Packages utilisateur détectés (APT): ${packages.length}`);
 
   const details = [];
 
   for (const pkgName of packages) {
-    const info = await getAptPackageDetails(pkgName);
+    const info = getAptPackageDetails(pkgName);
     if (info) {
       details.push(info);
     }
@@ -182,7 +317,7 @@ export async function listPackages(params = {}, callbacks = {}) {
   validatePackagesParams("list", params);
   logger.debug("Début de la récupération des packages installés");
 
-  const manager = await detectPackageManager();
+  const manager = detectPackageManager();
   if (!SUPPORTED_MANAGERS.includes(manager)) {
     throw new Error(`Gestionnaire de packages non supporté: ${manager}`);
   }
