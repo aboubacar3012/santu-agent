@@ -16,6 +16,7 @@ import * as userModule from "./user/index.js";
 import * as packagesModule from "./packages/index.js";
 import * as metadataModule from "./metadata/index.js";
 import * as ufwModule from "./ufw/index.js";
+import * as haproxyModule from "./haproxy/index.js";
 import { logger } from "../shared/logger.js";
 
 /**
@@ -156,6 +157,22 @@ try {
   logger.info("Module UFW enregistré avec succès");
 } catch (error) {
   logger.error("Erreur lors de l'enregistrement du module UFW", {
+    error: error.message,
+    stack: error.stack,
+  });
+  throw error;
+}
+
+try {
+  logger.debug("Tentative d'enregistrement du module HAProxy", {
+    haproxyModule,
+    hasActions: !!haproxyModule.actions,
+    hasValidator: !!haproxyModule.validator,
+  });
+  registerModule("haproxy", haproxyModule);
+  logger.info("Module HAProxy enregistré avec succès");
+} catch (error) {
+  logger.error("Erreur lors de l'enregistrement du module HAProxy", {
     error: error.message,
     stack: error.stack,
   });

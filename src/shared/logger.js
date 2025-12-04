@@ -17,10 +17,10 @@ const LOG_LEVELS = {
 
 /**
  * Niveau courant calculé à partir de la config.
- * On retombe sur `info` si la valeur fournie n'existe pas.
+ * On retombe sur `debug` si la valeur fournie n'existe pas (pour voir tous les logs en développement).
  */
 const currentLogLevel =
-  LOG_LEVELS[process.env.AGENT_LOG_LEVEL || "info"] || LOG_LEVELS.info;
+  LOG_LEVELS[process.env.AGENT_LOG_LEVEL || "debug"] || LOG_LEVELS.debug;
 
 /**
  * Formate un message de log
