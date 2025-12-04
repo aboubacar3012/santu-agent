@@ -23,7 +23,7 @@ function parseOsRelease() {
       return {};
     }
 
-    logger.debug("Contenu de /etc/os-release lu", {
+    console.log("Contenu de /etc/os-release lu", {
       length: content.length,
       preview: content.substring(0, 200),
     });
@@ -54,7 +54,7 @@ function parseOsRelease() {
       }
     }
 
-    logger.debug("Données parsées depuis /etc/os-release", data);
+    console.log("Données parsées depuis /etc/os-release", data);
     return data;
   } catch (error) {
     logger.error("Erreur lors de la lecture de /etc/os-release", {
@@ -70,7 +70,7 @@ function detectPackageManager() {
   const id = (osInfo.ID || "").toLowerCase();
   const idLike = (osInfo.ID_LIKE || "").toLowerCase();
 
-  logger.debug("Détection de la distribution", { id, idLike, osInfo });
+  console.log("Détection de la distribution", { id, idLike, osInfo });
 
   if (
     [id, idLike].some(
@@ -95,7 +95,7 @@ function listManualAptPackages() {
   try {
     const extendedStatesPath = "/var/lib/apt/extended_states";
     if (!existsSync(extendedStatesPath)) {
-      logger.debug("Fichier extended_states non trouvé, tentative avec status");
+      console.log("Fichier extended_states non trouvé, tentative avec status");
       // Fallback : lire depuis /var/lib/dpkg/status et filtrer les packages non-automatiques
       return listManualPackagesFromStatus();
     }
@@ -103,7 +103,7 @@ function listManualAptPackages() {
     const content = readFileSync(extendedStatesPath, "utf-8");
 
     if (!content || typeof content !== "string") {
-      logger.debug(
+      console.log(
         "Contenu de extended_states invalide ou vide, fallback vers status"
       );
       return listManualPackagesFromStatus();
@@ -230,14 +230,14 @@ function getInstallDate(pkgName) {
   try {
     const infoFile = `/var/lib/dpkg/info/${pkgName}.list`;
     if (!existsSync(infoFile)) {
-      logger.debug(`Fichier .list non trouvé pour ${pkgName}`);
+      console.log(`Fichier .list non trouvé pour ${pkgName}`);
       return null;
     }
 
     const stats = statSync(infoFile);
     return new Date(stats.mtimeMs).toISOString();
   } catch (error) {
-    logger.debug(
+    console.log(
       `Impossible de récupérer la date d'installation pour ${pkgName}`,
       {
         error: error.message,
@@ -254,14 +254,14 @@ function getAptPackageDetails(pkgName) {
   try {
     const statusPath = "/var/lib/dpkg/status";
     if (!existsSync(statusPath)) {
-      logger.debug(`Fichier status non trouvé pour ${pkgName}`);
+      console.log(`Fichier status non trouvé pour ${pkgName}`);
       return null;
     }
 
     const content = readFileSync(statusPath, "utf-8");
     
     if (!content || typeof content !== "string") {
-      logger.debug(`Contenu de status invalide ou vide pour ${pkgName}`);
+      console.log(`Contenu de status invalide ou vide pour ${pkgName}`);
       return null;
     }
     
@@ -348,7 +348,7 @@ function getAptPackageDetails(pkgName) {
       installedDate,
     };
   } catch (error) {
-    logger.debug(`Impossible de récupérer les détails du package ${pkgName}`, {
+    console.log(`Impossible de récupérer les détails du package ${pkgName}`, {
       error: error.message,
     });
     return null;
@@ -373,7 +373,7 @@ function listAptPackages() {
 
 export async function listPackages(params = {}, callbacks = {}) {
   validatePackagesParams("list", params);
-  logger.debug("Début de la récupération des packages installés");
+  console.log("Début de la récupération des packages installés");
 
   const manager = detectPackageManager();
   if (!SUPPORTED_MANAGERS.includes(manager)) {
