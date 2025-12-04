@@ -17,6 +17,12 @@ function parseOsRelease() {
 
     // Lire /etc/os-release directement depuis le système de fichiers monté
     const content = readFileSync(osReleasePath, "utf-8");
+
+    if (!content || typeof content !== "string") {
+      logger.error("Contenu de /etc/os-release invalide ou vide");
+      return {};
+    }
+
     logger.debug("Contenu de /etc/os-release lu", {
       length: content.length,
       preview: content.substring(0, 200),
@@ -95,6 +101,14 @@ function listManualAptPackages() {
     }
 
     const content = readFileSync(extendedStatesPath, "utf-8");
+
+    if (!content || typeof content !== "string") {
+      logger.debug(
+        "Contenu de extended_states invalide ou vide, fallback vers status"
+      );
+      return listManualPackagesFromStatus();
+    }
+
     const packages = [];
     let currentPackage = null;
 
@@ -150,6 +164,12 @@ function listManualPackagesFromStatus() {
     }
 
     const content = readFileSync(statusPath, "utf-8");
+
+    if (!content || typeof content !== "string") {
+      logger.error("Contenu de /var/lib/dpkg/status invalide ou vide");
+      return [];
+    }
+
     const packages = [];
     let currentPackage = null;
     let isInstalled = false;
@@ -239,6 +259,12 @@ function getAptPackageDetails(pkgName) {
     }
 
     const content = readFileSync(statusPath, "utf-8");
+    
+    if (!content || typeof content !== "string") {
+      logger.debug(`Contenu de status invalide ou vide pour ${pkgName}`);
+      return null;
+    }
+    
     let version = "unknown";
     let size = "0";
 
