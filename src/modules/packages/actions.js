@@ -113,23 +113,44 @@ function listManualAptPackages() {
       `Lecture de /var/lib/apt/extended_states (${content.length} caractères)`
     );
 
+    // Afficher un extrait du fichier pour debug
+    const lines = content.split("\n");
+    logger.debug(`Aperçu du fichier (premières lignes):`, {
+      preview: lines.slice(0, 15).join("\n"),
+    });
+
     const packages = [];
     let currentPackage = null;
+    let totalParsed = 0;
+    let manualCount = 0;
+    let autoCount = 0;
 
-    for (const line of content.split("\n")) {
+    for (const line of lines) {
       const cleaned = line.trim();
       if (!cleaned) {
         // Fin d'un bloc package
-        if (currentPackage && currentPackage.manual) {
-          packages.push(currentPackage.name);
+        if (currentPackage) {
+          totalParsed++;
+          if (currentPackage.manual) {
+            manualCount++;
+            packages.push(currentPackage.name);
+          } else {
+            autoCount++;
+          }
         }
         currentPackage = null;
         continue;
       }
 
       if (cleaned.startsWith("Package:")) {
-        if (currentPackage && currentPackage.manual) {
-          packages.push(currentPackage.name);
+        if (currentPackage) {
+          totalParsed++;
+          if (currentPackage.manual) {
+            manualCount++;
+            packages.push(currentPackage.name);
+          } else {
+            autoCount++;
+          }
         }
         currentPackage = {
           name: cleaned.replace("Package:", "").trim(),
@@ -146,15 +167,21 @@ function listManualAptPackages() {
     }
 
     // Dernier package
-    if (currentPackage && currentPackage.manual) {
-      packages.push(currentPackage.name);
+    if (currentPackage) {
+      totalParsed++;
+      if (currentPackage.manual) {
+        manualCount++;
+        packages.push(currentPackage.name);
+      } else {
+        autoCount++;
+      }
     }
 
     logger.info(
-      `Packages manuels trouvés depuis extended_states: ${packages.length}`
+      `Parsing terminé: ${totalParsed} packages parsés, ${manualCount} manuels, ${autoCount} automatiques`
     );
     if (packages.length > 0) {
-      logger.debug(`Premiers packages: ${packages.slice(0, 10).join(", ")}`);
+      logger.debug(`Premiers packages manuels: ${packages.slice(0, 10).join(", ")}`);
     }
 
     return packages.sort();
