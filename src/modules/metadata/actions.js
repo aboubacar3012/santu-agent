@@ -321,19 +321,22 @@ async function getSshPort() {
       // Ignorer les commentaires et les lignes vides
       if (!cleaned || cleaned.startsWith("#")) continue;
 
-      // Chercher la directive Port
-      if (cleaned.toLowerCase().startsWith("port")) {
-        const parts = cleaned.split(/\s+/);
-        if (parts.length >= 2) {
-          const port = parseInt(parts[1], 10);
-          if (!isNaN(port) && port > 0 && port <= 65535) {
-            return port;
-          }
+      // Chercher la directive Port (insensible à la casse)
+      // Format attendu: "Port 53796" ou "port 53796" ou "PORT 53796"
+      const portMatch = cleaned.match(/^port\s+(\d+)$/i);
+      if (portMatch && portMatch[1]) {
+        const port = parseInt(portMatch[1], 10);
+        if (!isNaN(port) && port > 0 && port <= 65535) {
+          logger.debug(`Port SSH trouvé dans sshd_config: ${port}`);
+          return port;
         }
       }
     }
 
     // Port par défaut si non trouvé
+    logger.debug(
+      "Port SSH non trouvé dans sshd_config, utilisation du port par défaut 22"
+    );
     return 22;
   } catch (error) {
     logger.error("Erreur lors de la lecture de /etc/ssh/sshd_config", {
