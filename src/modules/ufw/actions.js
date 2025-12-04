@@ -152,12 +152,27 @@ export async function listUfwRules(params = {}, callbacks = {}) {
 
     logger.debug("Début de la récupération des règles UFW");
 
-    // Le conteneur s'exécute déjà en root (privileged: true), donc pas besoin de sudo
-    // Essayer d'abord sans sudo, puis avec sudo si nécessaire
+    // Avec pid_mode: host et privileged: true, on peut utiliser nsenter
+    // pour exécuter la commande dans l'espace de noms de l'hôte (PID 1)
+    // Cela permet d'utiliser les binaires et bibliothèques de l'hôte
     let stdout, stderr, error;
 
-    // Essayer sans sudo d'abord (le conteneur est déjà root)
-    const result = await executeCommand("ufw status numbered", {
+    // Utiliser nsenter pour exécuter ufw dans l'espace de noms de l'hôte
+    // nsenter -t 1 -m -u -i -n -p -- ufw status numbered
+    // -t 1 : PID du processus init de l'hôte
+    // -m : monter l'espace de noms
+    // -u : user namespace
+    // -i : IPC namespace
+    // -n : network namespace
+    // -p : PID namespace
+    const nsenterCommand =
+      "nsenter -t 1 -m -u -i -n -p -- sh -c 'ufw status numbered'";
+
+    logger.debug("Exécution de la commande via nsenter", {
+      command: nsenterCommand,
+    });
+
+    const result = await executeCommand(nsenterCommand, {
       timeout: 10000,
     });
 
@@ -165,18 +180,15 @@ export async function listUfwRules(params = {}, callbacks = {}) {
     stderr = result.stderr;
     error = result.error;
 
-    // Si erreur liée à "command not found" pour ufw, essayer avec le chemin complet
-    if (error && stderr && stderr.includes("ufw: not found")) {
-      logger.debug("Tentative avec le chemin complet /usr/sbin/ufw");
-      const resultWithPath = await executeCommand(
-        "/usr/sbin/ufw status numbered",
-        {
-          timeout: 10000,
-        }
-      );
-      stdout = resultWithPath.stdout;
-      stderr = resultWithPath.stderr;
-      error = resultWithPath.error;
+    // Si nsenter échoue, essayer directement (au cas où on serait déjà dans le bon namespace)
+    if (error && stderr && stderr.includes("nsenter")) {
+      logger.debug("nsenter a échoué, tentative directe");
+      const directResult = await executeCommand("ufw status numbered", {
+        timeout: 10000,
+      });
+      stdout = directResult.stdout;
+      stderr = directResult.stderr;
+      error = directResult.error;
     }
 
     if (error) {
