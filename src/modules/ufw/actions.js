@@ -284,7 +284,74 @@ function prepareUfwCommand(command) {
 }
 
 /**
+ * Trouve le numéro de la règle "deny anywhere" dans la liste des règles UFW
+ * @returns {Promise<number|null>} Numéro de la règle ou null si non trouvée
+ */
+async function findDenyAnywhereRuleNumber() {
+  try {
+    const nsenterCommand =
+      "nsenter -t 1 -m -u -i -n -p -- sh -c 'ufw status numbered'";
+    const result = await executeCommand(nsenterCommand, {
+      timeout: 10000,
+    });
+
+    if (result.error || !result.stdout) {
+      return null;
+    }
+
+    const lines = result.stdout.split("\n");
+    for (const line of lines) {
+      const rule = parseUfwStatusLine(line);
+      if (
+        rule &&
+        rule.action === "DENY" &&
+        (rule.source === "Anywhere" ||
+          rule.source.toLowerCase().includes("anywhere"))
+      ) {
+        return rule.number;
+      }
+    }
+
+    return null;
+  } catch (error) {
+    logger.debug("Erreur lors de la recherche de la règle deny anywhere", {
+      error: error.message,
+    });
+    return null;
+  }
+}
+
+/**
+ * Exécute une commande UFW via nsenter
+ * @param {string} command - Commande UFW à exécuter
+ * @returns {Promise<Object>} Résultat de l'exécution
+ */
+async function executeUfwCommand(command) {
+  const escapedCommand = command.replace(/'/g, "'\"'\"'");
+  const nsenterCommand = `nsenter -t 1 -m -u -i -n -p -- sh -c '${escapedCommand}'`;
+
+  return await executeCommand(nsenterCommand, {
+    timeout: 30000,
+  });
+}
+
+/**
+ * Vérifie si une commande est une commande d'ajout (allow/deny mais pas delete)
+ * @param {string} command - Commande à vérifier
+ * @returns {boolean} True si c'est une commande d'ajout
+ */
+function isAddCommand(command) {
+  const cleaned = cleanUfwCommand(command).toLowerCase();
+  return (
+    (cleaned.includes("allow") || cleaned.includes("deny")) &&
+    !cleaned.includes("delete")
+  );
+}
+
+/**
  * Applique des règles UFW en exécutant une série de commandes
+ * Pour éviter que les nouvelles règles se retrouvent en bas, on supprime
+ * temporairement la règle "deny anywhere" avant d'ajouter, puis on la réajoute après.
  * @param {Object} params - Paramètres contenant les commandes à exécuter
  * @param {string[]} params.commands - Tableau de commandes UFW à exécuter
  * @param {Object} [callbacks] - Callbacks (non utilisés pour cette action)
@@ -299,6 +366,32 @@ export async function applyUfwRules(params = {}, callbacks = {}) {
       commandCount: commands.length,
     });
 
+    // Détecter si on a des commandes d'ajout (allow/deny mais pas delete)
+    const hasAddCommands = commands.some((cmd) => isAddCommand(cmd));
+
+    // Si on ajoute des règles, trouver et supprimer temporairement "deny anywhere"
+    let denyAnywhereNumber = null;
+    if (hasAddCommands) {
+      denyAnywhereNumber = await findDenyAnywhereRuleNumber();
+      if (denyAnywhereNumber !== null) {
+        logger.debug(
+          `Règle deny anywhere trouvée (numéro ${denyAnywhereNumber}), suppression temporaire`
+        );
+        const deleteCommand = `ufw --force delete ${denyAnywhereNumber}`;
+        const deleteResult = await executeUfwCommand(deleteCommand);
+        if (deleteResult.error) {
+          logger.warn(
+            "Impossible de supprimer temporairement la règle deny anywhere",
+            {
+              error: deleteResult.error.message || deleteResult.error,
+              stderr: deleteResult.stderr,
+            }
+          );
+          // Continuer quand même, ce n'est pas bloquant
+        }
+      }
+    }
+
     const results = [];
 
     // Exécuter chaque commande séquentiellement
@@ -312,21 +405,16 @@ export async function applyUfwRules(params = {}, callbacks = {}) {
       });
 
       try {
-        // Utiliser nsenter pour exécuter dans l'espace de noms de l'hôte
-        // Échapper les guillemets simples dans la commande pour sh -c
-        const escapedCommand = preparedCommand.replace(/'/g, "'\"'\"'");
-        const nsenterCommand = `nsenter -t 1 -m -u -i -n -p -- sh -c '${escapedCommand}'`;
-
-        const result = await executeCommand(nsenterCommand, {
-          timeout: 30000, // 30 secondes par commande
-        });
+        const result = await executeUfwCommand(preparedCommand);
 
         results.push({
           command: originalCommand,
           success: !result.error,
           stdout: result.stdout || "",
           stderr: result.stderr || "",
-          error: result.error ? result.error.message || String(result.error) : null,
+          error: result.error
+            ? result.error.message || String(result.error)
+            : null,
         });
 
         // Si une commande échoue, logger mais continuer avec les autres
@@ -355,6 +443,39 @@ export async function applyUfwRules(params = {}, callbacks = {}) {
           stdout: "",
           stderr: "",
           error: error.message || String(error),
+        });
+      }
+    }
+
+    // Si on avait supprimé "deny anywhere", la réajouter à la fin
+    if (denyAnywhereNumber !== null && hasAddCommands) {
+      logger.debug("Réajout de la règle deny anywhere à la fin");
+      const denyCommand = "ufw deny from any to any";
+      const denyResult = await executeUfwCommand(denyCommand);
+
+      if (denyResult.error) {
+        logger.warn("Impossible de réajouter la règle deny anywhere", {
+          error: denyResult.error.message || denyResult.error,
+          stderr: denyResult.stderr,
+        });
+        // Ajouter le résultat même en cas d'échec pour traçabilité
+        results.push({
+          command: `[Auto] ${denyCommand}`,
+          success: false,
+          stdout: denyResult.stdout || "",
+          stderr: denyResult.stderr || "",
+          error: denyResult.error
+            ? denyResult.error.message || String(denyResult.error)
+            : null,
+        });
+      } else {
+        logger.debug("Règle deny anywhere réajoutée avec succès");
+        results.push({
+          command: `[Auto] ${denyCommand}`,
+          success: true,
+          stdout: denyResult.stdout || "",
+          stderr: denyResult.stderr || "",
+          error: null,
         });
       }
     }
