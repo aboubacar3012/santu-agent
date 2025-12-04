@@ -171,130 +171,106 @@ function formatSizeFromKb(sizeKb) {
 
 function getInstallDate(pkgName) {
   try {
-    const infoFile = `/var/lib/dpkg/info/${pkgName}.list`;
-    if (!existsSync(infoFile)) {
-      console.log(`Fichier .list non trouvé pour ${pkgName}`);
-      return null;
+    // Essayer plusieurs fichiers pour obtenir la date d'installation
+    const possibleFiles = [
+      `/var/lib/dpkg/info/${pkgName}.list`,
+      `/var/lib/dpkg/info/${pkgName}.md5sums`,
+      `/var/lib/dpkg/info/${pkgName}.control`,
+    ];
+
+    for (const infoFile of possibleFiles) {
+      if (existsSync(infoFile)) {
+        const stats = statSync(infoFile);
+        return new Date(stats.mtimeMs).toISOString();
+      }
     }
 
-    const stats = statSync(infoFile);
-    return new Date(stats.mtimeMs).toISOString();
+    // Si aucun fichier n'existe, retourner null (c'est normal pour certains packages système)
+    return null;
   } catch (error) {
-    console.log(
-      `Impossible de récupérer la date d'installation pour ${pkgName}`,
-      {
-        error: error.message,
-      }
-    );
+    // Ne pas logger les erreurs pour les fichiers manquants (c'est normal)
     return null;
   }
 }
 
 /**
- * Lit les détails d'un package depuis /var/lib/dpkg/status
+ * Parse le fichier status et retourne un Map avec tous les détails des packages
+ * Cette fonction optimise en lisant le fichier une seule fois
  */
-function getAptPackageDetails(pkgName) {
+function parseAllPackageDetails() {
   try {
     const statusPath = "/var/lib/dpkg/status";
     if (!existsSync(statusPath)) {
-      console.log(`Fichier status non trouvé pour ${pkgName}`);
-      return null;
+      logger.error("Fichier /var/lib/dpkg/status non trouvé");
+      return new Map();
     }
 
     const content = readFileSync(statusPath, "utf-8");
-
     if (!content || typeof content !== "string") {
-      console.log(`Contenu de status invalide ou vide pour ${pkgName}`);
-      return null;
+      logger.error("Contenu de /var/lib/dpkg/status invalide ou vide");
+      return new Map();
     }
 
-    let version = "unknown";
-    let size = "0";
-
-    // Parser le fichier status pour trouver le package
+    const packagesMap = new Map();
     const lines = content.split("\n");
-    let inPackage = false;
+    let currentPackage = null;
     let packageBlock = [];
 
     for (const line of lines) {
       const cleaned = line.trim();
       if (!cleaned) {
-        // Fin d'un bloc
-        if (inPackage) {
-          // Parser le bloc
+        // Fin d'un bloc package
+        if (currentPackage && packageBlock.length > 0) {
           const blockText = packageBlock.join("\n");
-          if (blockText.includes(`Package: ${pkgName}`)) {
-            // Extraire version
-            const versionMatch = blockText.match(/Version:\s*(.+)/);
-            if (versionMatch) {
-              version = versionMatch[1].trim();
-            }
 
-            // Extraire taille
-            const sizeMatch = blockText.match(/Installed-Size:\s*(.+)/);
-            if (sizeMatch) {
-              size = sizeMatch[1].trim();
-            }
-            break;
-          }
-          inPackage = false;
-          packageBlock = [];
+          // Extraire version
+          const versionMatch = blockText.match(/Version:\s*(.+)/);
+          const version = versionMatch ? versionMatch[1].trim() : "unknown";
+
+          // Extraire taille
+          const sizeMatch = blockText.match(/Installed-Size:\s*(.+)/);
+          const size = sizeMatch ? sizeMatch[1].trim() : "0";
+
+          packagesMap.set(currentPackage, {
+            name: currentPackage,
+            version,
+            size,
+          });
         }
+        currentPackage = null;
+        packageBlock = [];
         continue;
       }
 
       if (cleaned.startsWith("Package:")) {
-        if (inPackage) {
-          // Nouveau package, parser l'ancien
-          const blockText = packageBlock.join("\n");
-          if (blockText.includes(`Package: ${pkgName}`)) {
-            const versionMatch = blockText.match(/Version:\s*(.+)/);
-            if (versionMatch) {
-              version = versionMatch[1].trim();
-            }
-            const sizeMatch = blockText.match(/Installed-Size:\s*(.+)/);
-            if (sizeMatch) {
-              size = sizeMatch[1].trim();
-            }
-            break;
-          }
-          packageBlock = [];
-        }
-        inPackage = true;
-        packageBlock.push(cleaned);
-      } else if (inPackage) {
+        currentPackage = cleaned.replace("Package:", "").trim();
+        packageBlock = [cleaned];
+      } else if (currentPackage) {
         packageBlock.push(cleaned);
       }
     }
 
-    // Vérifier le dernier bloc si nécessaire
-    if (inPackage && packageBlock.length > 0) {
+    // Dernier package
+    if (currentPackage && packageBlock.length > 0) {
       const blockText = packageBlock.join("\n");
-      if (blockText.includes(`Package: ${pkgName}`)) {
-        const versionMatch = blockText.match(/Version:\s*(.+)/);
-        if (versionMatch) {
-          version = versionMatch[1].trim();
-        }
-        const sizeMatch = blockText.match(/Installed-Size:\s*(.+)/);
-        if (sizeMatch) {
-          size = sizeMatch[1].trim();
-        }
-      }
+      const versionMatch = blockText.match(/Version:\s*(.+)/);
+      const version = versionMatch ? versionMatch[1].trim() : "unknown";
+      const sizeMatch = blockText.match(/Installed-Size:\s*(.+)/);
+      const size = sizeMatch ? sizeMatch[1].trim() : "0";
+
+      packagesMap.set(currentPackage, {
+        name: currentPackage,
+        version,
+        size,
+      });
     }
 
-    const installedDate = getInstallDate(pkgName);
-
-    return {
-      name: pkgName,
-      version: version || "unknown",
-      size: formatSizeFromKb(size),
-      installedDate,
-    };
+    return packagesMap;
   } catch (error) {
-    console.log(`Impossible de récupérer les détails du package ${pkgName}`, {
+    logger.error("Erreur lors du parsing de /var/lib/dpkg/status", {
       error: error.message,
     });
-    return null;
+    return new Map();
   }
 }
 
@@ -302,15 +278,36 @@ function listAptPackages() {
   const packages = listAllAptPackages();
   logger.info(`Packages installés détectés (APT): ${packages.length}`);
 
+  // Parser le fichier status une seule fois pour tous les packages
+  const packagesDetailsMap = parseAllPackageDetails();
+  logger.debug(`Détails parsés pour ${packagesDetailsMap.size} packages`);
+
   const details = [];
 
   for (const pkgName of packages) {
-    const info = getAptPackageDetails(pkgName);
-    if (info) {
-      details.push(info);
+    const baseInfo = packagesDetailsMap.get(pkgName);
+    if (!baseInfo) {
+      // Si le package n'est pas dans le map, créer une entrée basique
+      details.push({
+        name: pkgName,
+        version: "unknown",
+        size: "0 KB",
+        installedDate: getInstallDate(pkgName),
+      });
+      continue;
     }
+
+    const installedDate = getInstallDate(pkgName);
+
+    details.push({
+      name: baseInfo.name,
+      version: baseInfo.version || "unknown",
+      size: formatSizeFromKb(baseInfo.size),
+      installedDate,
+    });
   }
 
+  logger.info(`Détails complets récupérés pour ${details.length} packages`);
   return details;
 }
 
