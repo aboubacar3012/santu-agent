@@ -43,13 +43,24 @@ function parseCustomCronFile(content, filePath) {
       firstNonEmptyLineFound = true;
 
       // Vérifier si c'est un commentaire de description (pas une ligne cron commentée)
-      if (trimmed.startsWith("#") && !trimmed.match(/^#\s*[\d\*\/\-\,\s]+/)) {
-        // C'est une description sur la première ligne
-        const descMatch = trimmed.match(/^#\s*(.+)$/);
-        if (descMatch) {
-          description = descMatch[1].trim();
+      // Une ligne cron commentée commence par # suivi d'un chiffre, *, /, -, ou une virgule
+      if (trimmed.startsWith("#")) {
+        // Vérifier si ce n'est PAS une ligne cron commentée
+        const isCommentedCronLine = trimmed.match(/^#\s*[\d\*\/\-\,\s]/);
+        if (!isCommentedCronLine) {
+          // C'est une description sur la première ligne
+          // Extraire tout ce qui suit le # et les espaces éventuels
+          const descText = trimmed.substring(1).trim();
+          if (descText) {
+            description = descText;
+            logger.debug("Description trouvée", {
+              filePath,
+              description,
+              originalLine: trimmed,
+            });
+          }
+          continue; // Passer à la ligne suivante
         }
-        continue; // Passer à la ligne suivante
       }
       // Si la première ligne n'est pas un commentaire de description,
       // elle doit être une ligne cron, on la traitera ci-dessous
@@ -154,6 +165,12 @@ async function getCustomCronJobs() {
           logger.debug(`Fichier vide: ${filePath}`);
           continue;
         }
+
+        logger.debug("Contenu du fichier cron", {
+          filePath,
+          content: content.substring(0, 200), // Limiter à 200 caractères pour le log
+          lines: content.split("\n").length,
+        });
 
         const parsed = parseCustomCronFile(content, filePath);
         if (parsed) {
