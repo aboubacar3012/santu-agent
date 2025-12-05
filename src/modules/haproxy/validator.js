@@ -10,7 +10,7 @@
 /**
  * Liste blanche des actions HAProxy autorisées
  */
-const ALLOWED_HAPROXY_ACTIONS = ["list", "add-app"];
+const ALLOWED_HAPROXY_ACTIONS = ["list", "add-app", "app-list"];
 
 /**
  * Valide qu'une action HAProxy est autorisée
@@ -52,6 +52,9 @@ export function validateParams(action, params) {
   switch (action) {
     case "list":
       // Pour l'instant, pas de paramètres requis pour list
+      return {};
+    case "app-list":
+      // Pas de paramètres requis pour app-list
       return {};
     case "add-app":
       if (!params || typeof params !== "object") {

@@ -13,6 +13,7 @@ import * as validator from "./validator.js";
 const actions = {
   list: actionsModule.listHaproxyConfig,
   "add-app": actionsModule.addHaproxyApp,
+  "app-list": actionsModule.listHaproxyApps,
 };
 
 export { actions, validator };
