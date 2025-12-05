@@ -221,7 +221,8 @@ defaults
     # Pas de traces pour les connexions totalement vides (moins de bruit).
     option dontlognull
     # Format de log personnalisé
-    log-format "{\\\"timestamp\\\":\\\"%t\\\",\\\"client\\\":\\\"%ci:%cp\\\",\\\"method\\\":\\\"%HM\\\",\\\"path\\\":\\\"%HP\\\",\\\"status\\\":%ST,\\\"bytes\\\":%B,\\\"frontend\\\":\\\"%ft\\\",\\\"backend\\\":\\\"%b\\\",\\\"server\\\":\\\"%s\\\",\\\"total_time_ms\\\":%Tt}"
+    # Format de log personnalisé - Version enrichie avec toutes les informations disponibles
+    log-format "{\\\"timestamp\\\":\\\"%t\\\",\\\"client_ip\\\":\\\"%ci\\\",\\\"client_port\\\":%cp,\\\"method\\\":\\\"%HM\\\",\\\"path\\\":\\\"%HP\\\",\\\"query\\\":\\\"%HQ\\\",\\\"version\\\":\\\"%HV\\\",\\\"status\\\":%ST,\\\"bytes_read\\\":%B,\\\"bytes_uploaded\\\":%U,\\\"frontend\\\":\\\"%ft\\\",\\\"backend\\\":\\\"%b\\\",\\\"server\\\":\\\"%s\\\",\\\"server_queue\\\":%sq,\\\"backend_queue\\\":%bq,\\\"total_time_ms\\\":%Tt,\\\"connect_time_ms\\\":%Tc,\\\"response_time_ms\\\":%Tr,\\\"request_time_ms\\\":%Ta,\\\"ssl_version\\\":\\\"%sslv\\\",\\\"ssl_cipher\\\":\\\"%sslc\\\",\\\"user_agent\\\":\\\"%[capture.req.hdr(0)]\\\",\\\"host\\\":\\\"%[capture.req.hdr(1)]\\\",\\\"referer\\\":\\\"%[capture.req.hdr(2)]\\\",\\\"content_type\\\":\\\"%[capture.req.hdr(3)]\\\",\\\"content_length\\\":\\\"%[capture.req.hdr(4)]\\\",\\\"accept\\\":\\\"%[capture.req.hdr(5)]\\\",\\\"accept_language\\\":\\\"%[capture.req.hdr(6)]\\\",\\\"accept_encoding\\\":\\\"%[capture.req.hdr(7)]\\\",\\\"connection\\\":\\\"%[capture.req.hdr(8)]\\\",\\\"x_forwarded_for\\\":\\\"%[capture.req.hdr(9)]\\\",\\\"x_real_ip\\\":\\\"%[capture.req.hdr(10)]\\\"}"
     # Délai maxi pour se connecter à un serveur backend.
     timeout connect 30000ms
     # Délai maxi pour qu'un client reste branché.
