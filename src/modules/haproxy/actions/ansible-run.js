@@ -277,8 +277,8 @@ frontend web-in
     mode http
     option http-server-close
     # Capture de tous les headers HTTP pour les logs
-    http-request capture req.hdrs len 2048
-    http-response capture res.hdrs len 2048
+    http-request capture req.hdrs id 0 len 2048
+    http-response capture res.hdrs id 1 len 2048
     # Ajoute systématiquement X-Forwarded-For/X-Forwarded-Proto pour les backends.
     option forwardfor
 
