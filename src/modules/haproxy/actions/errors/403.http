@@ -1,0 +1,74 @@
+HTTP/1.1 403 Forbidden
+Cache-Control: no-cache
+Connection: close
+Content-Type: text/html; charset=utf-8
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Accès interdit - ElyaMaje</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #ffffff;
+            color: #000000;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 1rem;
+        }
+        .main-title {
+            font-size: 26px;
+            font-weight: 700;
+            margin-bottom: 1.5rem;
+            line-height: 1.2;
+        }
+        .description {
+            font-size: 14px;
+            color: #374151;
+            margin-bottom: 1.5rem;
+            line-height: 1.6;
+        }
+        .footer-text {
+            font-size: 14px;
+            color: #374151;
+            line-height: 1.6;
+            margin-top: 1.5rem;
+        }
+        @media (min-width: 1024px) {
+            .main-title {
+                font-size: 48px;
+            }
+            .description {
+                font-size: 21px;
+            }
+            .footer-text {
+                font-size: 21px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1 class="main-title">Accès interdit</h1>
+
+    <p class="description">
+        L'accès à cette ressource<br>
+        est actuellement interdit.
+    </p>
+
+    <p class="footer-text">
+        Si vous pensez qu'il s'agit d'une erreur, contactez l'administrateur.
+    </p>
+</body>
+</html>

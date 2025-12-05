@@ -10,7 +10,13 @@
 /**
  * Liste blanche des actions HAProxy autorisées
  */
-const ALLOWED_HAPROXY_ACTIONS = ["list", "add-app", "app-list", "remove-app"];
+const ALLOWED_HAPROXY_ACTIONS = [
+  "list",
+  "add-app",
+  "app-list",
+  "remove-app",
+  "ansible-run",
+];
 
 /**
  * Valide qu'une action HAProxy est autorisée
@@ -55,6 +61,9 @@ export function validateParams(action, params) {
       return {};
     case "app-list":
       // Pas de paramètres requis pour app-list
+      return {};
+    case "ansible-run":
+      // Pas de paramètres requis pour ansible-run
       return {};
     case "remove-app":
       if (!params || typeof params !== "object") {

@@ -1,0 +1,128 @@
+HTTP/1.1 503 Service Unavailable
+Cache-Control: no-cache
+Connection: close
+Content-Type: text/html; charset=utf-8
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Domaine non configuré - ElyaMaje</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #ffffff;
+            color: #000000;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 1rem;
+        }
+        .main-title {
+            font-size: 26px;
+            font-weight: 700;
+            margin-bottom: 1.5rem;
+            line-height: 1.2;
+        }
+        .description {
+            font-size: 14px;
+            color: #374151;
+            margin-bottom: 1.5rem;
+            line-height: 1.6;
+        }
+        .logo-container {
+            margin: 1.5rem 0;
+        }
+        .logo {
+            width: auto;
+            height: auto;
+            max-width: 336px;
+            max-height: 312px;
+        }
+        .domain-info {
+            background: #f9fafb;
+            padding: 1rem;
+            border-radius: 8px;
+            margin: 1.5rem 0;
+            font-family: 'Courier New', monospace;
+            color: #000000;
+            border: 1px solid #e5e7eb;
+            font-size: 14px;
+        }
+        .suggestions {
+            text-align: left;
+            margin: 1.5rem 0;
+            max-width: 500px;
+        }
+        .suggestions ul {
+            padding-left: 1.25rem;
+        }
+        .suggestions li {
+            margin: 0.5rem 0;
+            color: #374151;
+            font-size: 14px;
+        }
+        .footer-text {
+            font-size: 14px;
+            color: #374151;
+            line-height: 1.6;
+            margin-top: 1.5rem;
+        }
+        @media (min-width: 1024px) {
+            .main-title {
+                font-size: 48px;
+            }
+            .description {
+                font-size: 21px;
+            }
+            .footer-text {
+                font-size: 21px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1 class="main-title">Domaine non configuré</h1>
+
+    <p class="description">
+        Le domaine que vous essayez d'atteindre<br>
+        n'est pas configuré sur ce serveur.
+    </p>
+
+    <div class="logo-container">
+        <img src="https://play.elyamaje.com/MaintenanceIllustration.png" alt="ElyaMaje Logo" class="logo" />
+    </div>
+
+    <div class="domain-info">
+        <strong>Domaine demandé :</strong> <span id="current-domain"></span>
+    </div>
+
+    <div class="suggestions">
+        <strong>Suggestions :</strong>
+        <ul>
+            <li>Vérifiez l'orthographe du domaine</li>
+            <li>Contactez l'administrateur du serveur</li>
+            <li>Vérifiez que le domaine pointe vers la bonne adresse IP</li>
+        </ul>
+    </div>
+
+    <p class="footer-text">
+        Merci de votre patience et de votre compréhension<br>
+        Veuillez contacter l'administrateur si le problème persiste.
+    </p>
+
+    <script>
+        document.getElementById('current-domain').textContent = window.location.hostname;
+    </script>
+</body>
+</html>
