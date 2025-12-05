@@ -1,65 +1,13 @@
 /**
- * Actions User pour l'agent.
+ * Action list - Liste tous les utilisateurs du système
  *
- * Ce module encapsule toutes les opérations autorisées sur les utilisateurs système afin de :
- * - centraliser la récupération des utilisateurs du serveur,
- * - parser les informations utilisateur depuis /etc/passwd,
- * - fournir des réponses formatées prêtes à être envoyées via WebSocket.
- *
- * @module modules/user/actions
+ * @module modules/user/actions/list
  */
 
-import { logger } from "../../shared/logger.js";
-import { executeCommand } from "../../shared/executor.js";
-import { validateUserParams } from "./validator.js";
+import { logger } from "../../../shared/logger.js";
+import { validateUserParams } from "../validator.js";
 import { readFileSync } from "fs";
-
-/**
- * Récupère les groupes d'un utilisateur avec id -nG et les convertit en format séparé par virgules
- * @param {string} username - Nom d'utilisateur
- * @returns {Promise<string>} Groupes séparés par des virgules
- */
-async function getUserGroups(username) {
-  try {
-    // Utiliser id -nG pour obtenir tous les noms de groupes (exactement comme dans la commande shell)
-    // -G : affiche tous les groupes
-    // -n : affiche les noms au lieu des numéros
-    const { stdout, stderr, error } = await executeCommand(
-      `id -nG ${username} 2>/dev/null || echo ""`,
-      { timeout: 3000 }
-    );
-
-    if (error) {
-      logger.debug(`Erreur id -nG pour ${username}:`, { error, stderr });
-      return "";
-    }
-
-    if (!stdout || !stdout.trim()) {
-      logger.debug(`Pas de sortie pour id -nG ${username}`);
-      return "";
-    }
-
-    // Format: "group1 group2 group3" (séparés par des espaces)
-    // Convertir en "group1,group2,group3" (comme tr ' ' ',')
-    const output = stdout.trim();
-    const groups = output
-      .split(/\s+/)
-      .filter((g) => g && g.trim())
-      .join(",");
-
-    logger.debug(`id -nG ${username} = "${output}" -> "${groups}"`);
-
-    return groups;
-  } catch (error) {
-    logger.debug(
-      `Exception lors de la récupération des groupes pour ${username}`,
-      {
-        error: error.message,
-      }
-    );
-    return "";
-  }
-}
+import { getUserGroups } from "./utils.js";
 
 /**
  * Liste tous les utilisateurs du système
@@ -156,3 +104,4 @@ export async function listUsers(params = {}, callbacks = {}) {
     throw error;
   }
 }
+
