@@ -197,6 +197,7 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
 
     // 6. Générer le certificat si nécessaire
     const needsCert = !certExists || certSize === 0;
+    let haproxyWasStopped = false;
     if (needsCert) {
       logger.info("Génération du certificat SSL nécessaire");
 
@@ -204,6 +205,7 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
       if (isHaproxyActive) {
         logger.debug("Arrêt de HAProxy pour certbot");
         await executeHostCommand(`systemctl stop ${haproxy_service_name}`);
+        haproxyWasStopped = true;
       }
 
       // Attendre la libération du port 80 (vérification simple)
@@ -332,20 +334,7 @@ backend ${app_slug}_backend
       throw new Error("Erreur lors de la création du fichier backend");
     }
 
-    // 10. Redémarrer HAProxy
-    logger.info("Redémarrage de HAProxy");
-    const restartResult = await executeHostCommand(
-      `systemctl restart ${haproxy_service_name}`
-    );
-
-    if (restartResult.error) {
-      logger.error("Erreur lors du redémarrage de HAProxy", {
-        error: restartResult.stderr,
-      });
-      throw new Error("Erreur lors du redémarrage de HAProxy");
-    }
-
-    // 11. Vérifier les dates d'expiration du certificat
+    // 10. Vérifier les dates d'expiration du certificat
     const finalCertExists = await hostFileExists(certPath);
     const finalCertSize = finalCertExists ? await getHostFileSize(certPath) : 0;
     let certDates = null;
@@ -372,6 +361,54 @@ backend ${app_slug}_backend
       app_name,
       app_domain,
       app_slug,
+    });
+
+    // 11. Redémarrer/recharger HAProxy de manière asynchrone après la réponse
+    // pour éviter de fermer la connexion WebSocket prématurément
+    setImmediate(async () => {
+      try {
+        if (haproxyWasStopped) {
+          // Si HAProxy a été arrêté pour certbot, le redémarrer
+          logger.info("Redémarrage de HAProxy après génération du certificat");
+          const startResult = await executeHostCommand(
+            `systemctl start ${haproxy_service_name}`
+          );
+          if (startResult.error) {
+            logger.error("Erreur lors du redémarrage de HAProxy", {
+              error: startResult.stderr,
+            });
+          } else {
+            logger.info("HAProxy redémarré avec succès");
+          }
+        } else if (isHaproxyActive) {
+          // Si HAProxy était actif et n'a pas été arrêté, recharger la configuration
+          logger.info("Rechargement de la configuration HAProxy");
+          const reloadResult = await executeHostCommand(
+            `systemctl reload ${haproxy_service_name}`
+          );
+          if (reloadResult.error) {
+            logger.error("Erreur lors du rechargement de HAProxy", {
+              error: reloadResult.stderr,
+            });
+            // Si reload échoue, essayer restart
+            logger.info("Tentative de redémarrage complet de HAProxy");
+            const restartResult = await executeHostCommand(
+              `systemctl restart ${haproxy_service_name}`
+            );
+            if (restartResult.error) {
+              logger.error("Erreur lors du redémarrage de HAProxy", {
+                error: restartResult.stderr,
+              });
+            }
+          } else {
+            logger.info("Configuration HAProxy rechargée avec succès");
+          }
+        }
+      } catch (error) {
+        logger.error("Erreur lors du redémarrage/rechargement de HAProxy", {
+          error: error.message,
+        });
+      }
     });
 
     return {
