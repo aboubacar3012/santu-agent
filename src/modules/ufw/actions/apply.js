@@ -75,13 +75,22 @@ export async function applyUfwRules(params = {}, callbacks = {}) {
 
         // UFW peut retourner un code de sortie 0 même en cas d'erreur
         // Il faut vérifier stderr pour détecter les erreurs UFW
+        // result.error peut être true (booléen), "true" (string), ou un objet Error
         const hasError =
-          result.error || (result.stderr && result.stderr.includes("ERROR:"));
-        const errorMessage = result.error
-          ? result.error.message || String(result.error)
-          : result.stderr && result.stderr.includes("ERROR:")
-          ? result.stderr.trim()
-          : null;
+          result.error === true ||
+          result.error === "true" ||
+          result.error instanceof Error ||
+          (result.stderr && result.stderr.includes("ERROR:"));
+        const errorMessage =
+          result.error instanceof Error
+            ? result.error.message
+            : result.error === true || result.error === "true"
+            ? result.stderr && result.stderr.includes("ERROR:")
+              ? result.stderr.trim()
+              : "Erreur lors de l'exécution de la commande"
+            : result.stderr && result.stderr.includes("ERROR:")
+            ? result.stderr.trim()
+            : null;
 
         results.push({
           command: originalCommand,
@@ -122,6 +131,7 @@ export async function applyUfwRules(params = {}, callbacks = {}) {
     }
 
     // Si on avait supprimé "deny anywhere", la réajouter à la fin
+    // Mais ne pas l'inclure dans les résultats retournés (c'est une opération interne)
     if (denyAnywhereNumber !== null && hasAddCommands) {
       logger.debug("Réajout de la règle deny anywhere à la fin");
       const denyCommand = "ufw deny from any to any";
@@ -132,39 +142,27 @@ export async function applyUfwRules(params = {}, callbacks = {}) {
           error: denyResult.error.message || denyResult.error,
           stderr: denyResult.stderr,
         });
-        // Ajouter le résultat même en cas d'échec pour traçabilité
-        results.push({
-          command: `[Auto] ${denyCommand}`,
-          success: false,
-          stdout: denyResult.stdout || "",
-          stderr: denyResult.stderr || "",
-          error: denyResult.error
-            ? denyResult.error.message || String(denyResult.error)
-            : null,
-        });
       } else {
         logger.debug("Règle deny anywhere réajoutée avec succès");
-        results.push({
-          command: `[Auto] ${denyCommand}`,
-          success: true,
-          stdout: denyResult.stdout || "",
-          stderr: denyResult.stderr || "",
-          error: null,
-        });
       }
+      // Ne pas ajouter cette commande automatique aux résultats
     }
 
-    // Compter les succès et échecs
-    const successCount = results.filter((r) => r.success).length;
-    const failureCount = results.filter((r) => !r.success).length;
+    // Filtrer les résultats pour ne retourner que les commandes utilisateur
+    // (exclure les commandes automatiques comme "[Auto] ...")
+    const userResults = results.filter((r) => !r.command.startsWith("[Auto]"));
+
+    // Compter les succès et échecs uniquement sur les commandes utilisateur
+    const successCount = userResults.filter((r) => r.success).length;
+    const failureCount = userResults.filter((r) => !r.success).length;
 
     logger.info(
       `Application des règles UFW terminée : ${successCount} succès, ${failureCount} échecs`
     );
 
     return {
-      success: failureCount === 0, // Succès global si toutes les commandes ont réussi
-      results,
+      success: failureCount === 0, // Succès global si toutes les commandes utilisateur ont réussi
+      results: userResults, // Retourner uniquement les résultats des commandes utilisateur
     };
   } catch (error) {
     logger.error("Erreur lors de l'application des règles UFW", {
