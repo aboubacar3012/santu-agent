@@ -223,7 +223,7 @@ defaults
     option dontlognull
     # Format de log personnalisé
     # Format de log personnalisé - Version enrichie avec toutes les informations disponibles
-    log-format "{ \\\"timestamp\\\":\\\"%t\\\", \\\"client\\\":{\\\"ip\\\":\\\"%ci\\\",\\\"port\\\":%cp}, \\\"request\\\":{\\\"method\\\":\\\"%HM\\\",\\\"path\\\":\\\"%HP\\\",\\\"query\\\":\\\"%HQ\\\",\\\"version\\\":\\\"%HV\\\"}, \\\"response\\\":{\\\"status\\\":%ST,\\\"bytes_read\\\":%B,\\\"bytes_uploaded\\\":%U}, \\\"routing\\\":{\\\"backend\\\":\\\"%b\\\",\\\"server\\\":\\\"%s\\\",\\\"server_queue\\\":%sq,\\\"backend_queue\\\":%bq}, \\\"timing\\\":{\\\"total_ms\\\":%Tt,\\\"connect_ms\\\":%Tc,\\\"response_ms\\\":%Tr,\\\"request_ms\\\":%Ta}, \\\"ssl\\\":{\\\"version\\\":\\\"%sslv\\\",\\\"cipher\\\":\\\"%sslc\\\"}, \\\"request_headers\\\":\\\"%hr\\\", \\\"response_headers\\\":\\\"%hs\\\" }"
+    log-format "{ \\\"timestamp\\\":\\\"%t\\\", \\\"client\\\":{\\\"ip\\\":\\\"%ci\\\",\\\"port\\\":%cp}, \\\"request\\\":{\\\"method\\\":\\\"%HM\\\",\\\"path\\\":\\\"%HP\\\",\\\"query\\\":\\\"%HQ\\\",\\\"version\\\":\\\"%HV\\\"}, \\\"response\\\":{\\\"status\\\":%ST,\\\"bytes_read\\\":%B,\\\"bytes_uploaded\\\":%U}, \\\"routing\\\":{\\\"backend\\\":\\\"%b\\\",\\\"server\\\":\\\"%s\\\",\\\"server_queue\\\":%sq,\\\"backend_queue\\\":%bq}, \\\"timing\\\":{\\\"total_ms\\\":%Tt,\\\"connect_ms\\\":%Tc,\\\"response_ms\\\":%Tr,\\\"request_ms\\\":%Ta}, \\\"ssl\\\":{\\\"version\\\":\\\"%sslv\\\",\\\"cipher\\\":\\\"%sslc\\\"}, \\\"request_headers\\\":\\\"%hr\\\" }"
     # Délai maxi pour se connecter à un serveur backend.
     timeout connect 30000ms
     # Délai maxi pour qu'un client reste branché.
@@ -276,9 +276,8 @@ frontend web-in
     # On reste en mode HTTP et on trace finement les requêtes pour le support.
     mode http
     option http-server-close
-    # Capture de tous les headers HTTP pour les logs
+    # Capture de tous les headers HTTP de requête pour les logs
     http-request capture req.hdrs id 0 len 2048
-    http-response capture res.hdrs id 1 len 2048
     # Ajoute systématiquement X-Forwarded-For/X-Forwarded-Proto pour les backends.
     option forwardfor
 
