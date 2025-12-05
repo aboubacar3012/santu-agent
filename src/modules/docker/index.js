@@ -6,19 +6,26 @@
  * @module modules/docker/index
  */
 
-import * as actionsModule from "./actions.js";
+import { listContainers } from "./actions/list.js";
+import { inspectContainer } from "./actions/inspect.js";
+import { startContainer } from "./actions/start.js";
+import { stopContainer } from "./actions/stop.js";
+import { restartContainer } from "./actions/restart.js";
+import { getContainerLogs } from "./actions/logs.js";
+import { getContainerStats } from "./actions/stats.js";
+import { execContainer } from "./actions/exec.js";
 import * as validator from "./validator.js";
 
 // Mapping des noms d'actions vers les fonctions
 const actions = {
-  list: actionsModule.listContainers,
-  inspect: actionsModule.inspectContainer,
-  start: actionsModule.startContainer,
-  stop: actionsModule.stopContainer,
-  restart: actionsModule.restartContainer,
-  logs: actionsModule.getContainerLogs,
-  stats: actionsModule.getContainerStats,
-  exec: actionsModule.execContainer,
+  list: listContainers,
+  inspect: inspectContainer,
+  start: startContainer,
+  stop: stopContainer,
+  restart: restartContainer,
+  logs: getContainerLogs,
+  stats: getContainerStats,
+  exec: execContainer,
 };
 
 export { actions, validator };
