@@ -216,14 +216,12 @@ global
 defaults
     # Réutilise la configuration de logs définie dans le bloc global.
     log global
+    log-format "{ \"timestamp\":\"%t\", \"client\":\"%ci:%cp\", \"method\":\"%HM\", \"path\":\"%HP\", \"status\":%ST, \"bytes\":%B, \"frontend\":\"%ft\", \"backend\":\"%b\", \"server\":\"%s\", \"total_time_ms\":%Tt }"
+    # Format de log personnalisé
     # Tout parle HTTP par défaut (et non TCP brut).
     mode http
-    # Format de journaux détaillé adapté aux requêtes web.
-    option httplog
     # Pas de traces pour les connexions totalement vides (moins de bruit).
     option dontlognull
-    # Format de log personnalisé
-    log-format "%ci:%cp - [%t] method=%HM path=%HP status=%ST bytes=%B backend=%b server=%s total_time=%Tt"
     # Délai maxi pour se connecter à un serveur backend.
     timeout connect 30000ms
     # Délai maxi pour qu'un client reste branché.
@@ -259,6 +257,7 @@ defaults
     const frontendConfig = `# Frontend unifié pour gérer le trafic HTTP et HTTPS
 # Porte d'entrée principale : écoute, applique les règles HTTP et achemine vers le bon backend.
 frontend web-in
+    log global
     # Bind HTTP et HTTPS sur le même frontend
     # Port 80 pour le trafic non chiffré (utile pour anciennes applis ou redirections automatiques).
     bind *:80
@@ -267,7 +266,6 @@ frontend web-in
 
     # On reste en mode HTTP et on trace finement les requêtes pour le support.
     mode http
-    option httplog
     option http-server-close
     # Ajoute systématiquement X-Forwarded-For/X-Forwarded-Proto pour les backends.
     option forwardfor
