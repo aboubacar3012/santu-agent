@@ -223,7 +223,7 @@ defaults
     option dontlognull
     # Format de log personnalisé
     # Format de log personnalisé - Version enrichie avec toutes les informations disponibles
-    log-format "{ \\\"timestamp\\\":\\\"%t\\\", \\\"client\\\":{\\\"ip\\\":\\\"%ci\\\",\\\"port\\\":%cp}, \\\"request\\\":{\\\"method\\\":\\\"%HM\\\",\\\"path\\\":\\\"%HP\\\",\\\"query\\\":\\\"%HQ\\\",\\\"version\\\":\\\"%HV\\\"}, \\\"response\\\":{\\\"status\\\":%ST,\\\"bytes_read\\\":%B,\\\"bytes_uploaded\\\":%U}, \\\"routing\\\":{\\\"backend\\\":\\\"%b\\\",\\\"server\\\":\\\"%s\\\",\\\"server_queue\\\":%sq,\\\"backend_queue\\\":%bq}, \\\"timing\\\":{\\\"total_ms\\\":%Tt,\\\"connect_ms\\\":%Tc,\\\"response_ms\\\":%Tr,\\\"request_ms\\\":%Ta}, \\\"ssl\\\":{\\\"version\\\":\\\"%sslv\\\",\\\"cipher\\\":\\\"%sslc\\\"}, \\\"request_headers\\\":\\\"%hr\\\" }"
+    log-format "{ \\\"timestamp\\\":\\\"%t\\\", \\\"client\\\":{\\\"ip\\\":\\\"%ci\\\",\\\"port\\\":%cp}, \\\"request\\\":{\\\"method\\\":\\\"%HM\\\",\\\"path\\\":\\\"%HP\\\",\\\"query\\\":\\\"%HQ\\\",\\\"version\\\":\\\"%HV\\\"}, \\\"response\\\":{\\\"status\\\":%ST,\\\"bytes_read\\\":%B,\\\"bytes_uploaded\\\":%U}, \\\"routing\\\":{\\\"backend\\\":\\\"%b\\\",\\\"server\\\":\\\"%s\\\",\\\"server_queue\\\":%sq,\\\"backend_queue\\\":%bq}, \\\"timing\\\":{\\\"total_ms\\\":%Tt,\\\"connect_ms\\\":%Tc,\\\"response_ms\\\":%Tr,\\\"request_ms\\\":%Ta}, \\\"ssl\\\":{\\\"version\\\":\\\"%sslv\\\",\\\"cipher\\\":\\\"%sslc\\\"} }"
     # Délai maxi pour se connecter à un serveur backend.
     timeout connect 30000ms
     # Délai maxi pour qu'un client reste branché.
