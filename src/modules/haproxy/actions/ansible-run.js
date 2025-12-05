@@ -222,6 +222,8 @@ defaults
     option httplog
     # Pas de traces pour les connexions totalement vides (moins de bruit).
     option dontlognull
+    # Format de log personnalisé
+    log-format "%ci:%cp - [%t] method=%HM path=%HP status=%ST bytes=%B backend=%b server=%s total_time=%Tt"
     # Délai maxi pour se connecter à un serveur backend.
     timeout connect 30000ms
     # Délai maxi pour qu'un client reste branché.
