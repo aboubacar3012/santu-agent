@@ -10,17 +10,21 @@ import { executeHostCommand, hostFileExists } from "./utils.js";
 
 /**
  * Génère un nom de fichier slug à partir d'un nom de tâche
+ * Tous les fichiers cron personnalisés commencent par "agent-cron"
  * @param {string} taskName - Nom de la tâche
- * @returns {string} Nom de fichier slug
+ * @returns {string} Nom de fichier slug avec préfixe "agent-cron"
  */
 function generateFileName(taskName) {
-  return taskName
+  const slug = taskName
     .toLowerCase()
     .trim()
     .replace(/[^a-z0-9\s_-]/g, "") // Supprimer les caractères spéciaux
     .replace(/\s+/g, "-") // Remplacer les espaces par des tirets
     .replace(/-+/g, "-") // Remplacer les tirets multiples par un seul
     .replace(/^-+|-+$/g, ""); // Supprimer les tirets en début/fin
+
+  // Ajouter le préfixe "agent-cron" si le slug n'est pas vide
+  return slug ? `agent-cron-${slug}` : "";
 }
 
 /**
