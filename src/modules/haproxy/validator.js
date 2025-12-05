@@ -16,6 +16,7 @@ const ALLOWED_HAPROXY_ACTIONS = [
   "app-list",
   "remove-app",
   "ansible-run",
+  "logs",
 ];
 
 /**
@@ -64,6 +65,9 @@ export function validateParams(action, params) {
       return {};
     case "ansible-run":
       // Pas de paramètres requis pour ansible-run
+      return {};
+    case "logs":
+      // Pas de paramètres requis pour logs
       return {};
     case "remove-app":
       if (!params || typeof params !== "object") {
