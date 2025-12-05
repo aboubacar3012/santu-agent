@@ -238,14 +238,21 @@ defaults
     errorfile 504 /etc/haproxy/errors/504.http
 `;
 
+    // Échapper le contenu pour la commande shell
+    // On utilise printf avec %b pour interpréter les séquences d'échappement
+    // Dans la chaîne JavaScript, on a \\\" qui devient \" dans la chaîne réelle
+    // Après échappement avec replace(/\\/g, "\\\\"), ça devient \\\" (deux backslashes + guillemet)
+    // Avec printf '%b', \\\" sera interprété comme \" (backslash + guillemet), ce qui est correct
     const defaultsEscaped = defaultsConfig
-      .replace(/\\/g, "\\\\")
-      .replace(/'/g, "'\"'\"'")
-      .replace(/\$/g, "\\$")
-      .replace(/`/g, "\\`");
+      .replace(/\\/g, "\\\\") // Échapper tous les backslashes
+      .replace(/'/g, "'\"'\"'") // Échapper les apostrophes pour la commande shell
+      .replace(/\$/g, "\\$") // Échapper les $ pour éviter l'expansion de variables
+      .replace(/`/g, "\\`"); // Échapper les backticks
 
+    // Utiliser printf avec %b pour interpréter les séquences d'échappement (\n, \", etc.)
+    // Cela permet de préserver correctement les backslashes pour les guillemets dans le format de log
     const defaultsResult = await executeHostCommand(
-      `printf '%s' '${defaultsEscaped}' > '${haproxy_conf_dir}/defaults.cfg' && chmod 644 '${haproxy_conf_dir}/defaults.cfg'`
+      `printf '%b' '${defaultsEscaped}' > '${haproxy_conf_dir}/defaults.cfg' && chmod 644 '${haproxy_conf_dir}/defaults.cfg'`
     );
     if (defaultsResult.error) {
       throw new Error(
