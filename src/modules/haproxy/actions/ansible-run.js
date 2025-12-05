@@ -216,12 +216,12 @@ global
 defaults
     # Réutilise la configuration de logs définie dans le bloc global.
     log global
-    log-format "{ \"timestamp\":\"%t\", \"client\":\"%ci:%cp\", \"method\":\"%HM\", \"path\":\"%HP\", \"status\":%ST, \"bytes\":%B, \"frontend\":\"%ft\", \"backend\":\"%b\", \"server\":\"%s\", \"total_time_ms\":%Tt }"
-    # Format de log personnalisé
     # Tout parle HTTP par défaut (et non TCP brut).
     mode http
     # Pas de traces pour les connexions totalement vides (moins de bruit).
     option dontlognull
+    # Format de log personnalisé
+    log-format "{ \"timestamp\":\"%t\", \"client\":\"%ci:%cp\", \"method\":\"%HM\", \"path\":\"%HP\", \"status\":%ST, \"bytes\":%B, \"frontend\":\"%ft\", \"backend\":\"%b\", \"server\":\"%s\", \"total_time_ms\":%Tt }"
     # Délai maxi pour se connecter à un serveur backend.
     timeout connect 30000ms
     # Délai maxi pour qu'un client reste branché.
