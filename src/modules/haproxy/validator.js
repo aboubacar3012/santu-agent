@@ -10,7 +10,7 @@
 /**
  * Liste blanche des actions HAProxy autorisées
  */
-const ALLOWED_HAPROXY_ACTIONS = ["list", "add-app", "app-list"];
+const ALLOWED_HAPROXY_ACTIONS = ["list", "add-app", "app-list", "remove-app"];
 
 /**
  * Valide qu'une action HAProxy est autorisée
@@ -56,6 +56,32 @@ export function validateParams(action, params) {
     case "app-list":
       // Pas de paramètres requis pour app-list
       return {};
+    case "remove-app":
+      if (!params || typeof params !== "object") {
+        throw new Error("Les paramètres doivent être un objet");
+      }
+
+      // Validation app_slug
+      if (!params.app_slug || typeof params.app_slug !== "string") {
+        throw new Error(
+          "app_slug est requis et doit être une chaîne de caractères"
+        );
+      }
+      const trimmedAppSlug = params.app_slug.trim();
+      if (!trimmedAppSlug) {
+        throw new Error("app_slug ne peut pas être vide");
+      }
+      // Validation regex : lettres, chiffres, tirets, 3-63 caractères
+      const appSlugRegex = /^[a-zA-Z][a-zA-Z0-9-]{1,62}$/;
+      if (!appSlugRegex.test(trimmedAppSlug)) {
+        throw new Error(
+          "app_slug est invalide. Utilisez uniquement des lettres, chiffres et tirets (3-63 caractères, commençant par une lettre)."
+        );
+      }
+
+      return {
+        app_slug: trimmedAppSlug,
+      };
     case "add-app":
       if (!params || typeof params !== "object") {
         throw new Error("Les paramètres doivent être un objet");
