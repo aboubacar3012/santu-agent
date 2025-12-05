@@ -66,9 +66,7 @@ export async function addCronJob(params = {}, callbacks = {}) {
     // Vérifier si le fichier existe déjà
     const fileExists = await hostFileExists(filePath);
     if (fileExists) {
-      throw new Error(
-        `Une tâche cron avec le nom "${task_name}" existe déjà. Veuillez choisir un autre nom.`
-      );
+      logger.debug("Le fichier existe déjà, il sera écrasé", { filePath });
     }
 
     // S'assurer que le répertoire /etc/cron.d existe
@@ -108,8 +106,11 @@ export async function addCronJob(params = {}, callbacks = {}) {
       .replace(/\$/g, "\\$")
       .replace(/`/g, "\\`");
 
-    // Créer le fichier
-    logger.debug("Création du fichier cron", { filePath });
+    // Créer ou écraser le fichier
+    logger.debug(
+      fileExists ? "Écrasement du fichier cron" : "Création du fichier cron",
+      { filePath }
+    );
     const writeResult = await executeHostCommand(
       `printf '%s' '${escapedContent}' > '${filePath}' && chmod 644 '${filePath}' && chown root:root '${filePath}'`
     );
@@ -120,18 +121,25 @@ export async function addCronJob(params = {}, callbacks = {}) {
       );
     }
 
-    logger.info("Tâche cron créée avec succès", {
-      task_name,
-      filePath,
-      enabled,
-    });
+    logger.info(
+      fileExists
+        ? "Tâche cron mise à jour avec succès"
+        : "Tâche cron créée avec succès",
+      {
+        task_name,
+        filePath,
+        enabled,
+      }
+    );
 
     return {
       success: true,
       task_name,
       file_path: filePath,
       enabled,
-      message: `Tâche cron "${task_name}" créée avec succès dans ${filePath}`,
+      message: fileExists
+        ? `Tâche cron "${task_name}" mise à jour avec succès dans ${filePath}`
+        : `Tâche cron "${task_name}" créée avec succès dans ${filePath}`,
     };
   } catch (error) {
     logger.error("Erreur lors de l'ajout de la tâche cron", {
