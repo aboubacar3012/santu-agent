@@ -23,16 +23,28 @@ function parseCustomCronFile(content, filePath) {
   let description = null;
   let cronLine = null;
   let enabled = true;
+  let descriptionFound = false;
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
+    // Si on a déjà trouvé la ligne cron, on arrête
+    if (cronLine) {
+      break;
+    }
+
     // Ligne de description (commentaire commençant par # mais pas une ligne cron commentée)
-    if (trimmed.startsWith("#") && !trimmed.match(/^#\s*[\d\*\/\-\,\s]+/)) {
+    // On ne prend que le PREMIER commentaire qui n'est pas une ligne cron
+    if (
+      !descriptionFound &&
+      trimmed.startsWith("#") &&
+      !trimmed.match(/^#\s*[\d\*\/\-\,\s]+/)
+    ) {
       const descMatch = trimmed.match(/^#\s*(.+)$/);
       if (descMatch) {
         description = descMatch[1].trim();
+        descriptionFound = true;
       }
       continue;
     }
@@ -44,11 +56,13 @@ function parseCustomCronFile(content, filePath) {
       if (commentedLine.match(/^[\d\*\/\-\,\s]+/)) {
         cronLine = commentedLine;
         enabled = false;
+        break; // On a trouvé la ligne cron, on s'arrête
       }
     } else if (trimmed.match(/^[\d\*\/\-\,\s]+/)) {
       // Ligne cron active
       cronLine = trimmed;
       enabled = true;
+      break; // On a trouvé la ligne cron, on s'arrête
     }
   }
 
