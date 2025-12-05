@@ -5,187 +5,202 @@
  */
 
 import { logger } from "../../../shared/logger.js";
-import { executeCommand } from "../../../shared/executor.js";
 import { validateCronParams } from "../validator.js";
-import { readFileSync, existsSync } from "fs";
-import {
-  parseCronLine,
-  getSystemCronJobs,
-  getUserCronJobs,
-  getSystemUsers,
-  getAllCronJobsViaCommand,
-} from "./utils.js";
+import { executeHostCommand } from "./utils.js";
 
 /**
- * Liste toutes les tâches cron du serveur
+ * Parse un fichier cron personnalisé créé via add-cron
+ * Format attendu:
+ * # description (optionnel)
+ * # minute hour day month weekday user command (si enabled=false)
+ * minute hour day month weekday user command (si enabled=true)
+ * @param {string} content - Contenu du fichier
+ * @param {string} filePath - Chemin du fichier
+ * @returns {Object|null} Tâche cron parsée ou null
+ */
+function parseCustomCronFile(content, filePath) {
+  const lines = content.split("\n");
+  let description = null;
+  let cronLine = null;
+  let enabled = true;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // Ligne de description (commentaire commençant par # mais pas une ligne cron commentée)
+    if (trimmed.startsWith("#") && !trimmed.match(/^#\s*[\d\*\/\-\,\s]+/)) {
+      const descMatch = trimmed.match(/^#\s*(.+)$/);
+      if (descMatch) {
+        description = descMatch[1].trim();
+      }
+      continue;
+    }
+
+    // Ligne cron (active ou commentée)
+    if (trimmed.startsWith("#")) {
+      // Ligne cron commentée (tâche désactivée)
+      const commentedLine = trimmed.substring(1).trim();
+      if (commentedLine.match(/^[\d\*\/\-\,\s]+/)) {
+        cronLine = commentedLine;
+        enabled = false;
+      }
+    } else if (trimmed.match(/^[\d\*\/\-\,\s]+/)) {
+      // Ligne cron active
+      cronLine = trimmed;
+      enabled = true;
+    }
+  }
+
+  if (!cronLine) {
+    return null;
+  }
+
+  // Parser la ligne cron (format: minute hour day month weekday user command)
+  const parts = cronLine.split(/\s+/);
+  if (parts.length < 6) {
+    return null;
+  }
+
+  const [minute, hour, day, month, weekday, user, ...commandParts] = parts;
+  const command = commandParts.join(" ");
+
+  // Extraire le nom de la tâche depuis le nom du fichier (enlever "agent-cron-" et l'extension)
+  const fileName = filePath.split("/").pop();
+  const taskName = fileName
+    .replace(/^agent-cron-/, "")
+    .replace(/\.(cfg|conf)?$/, "");
+
+  return {
+    schedule: {
+      minute: minute || "*",
+      hour: hour || "*",
+      day: day || "*",
+      month: month || "*",
+      weekday: weekday || "*",
+    },
+    command: command.trim(),
+    user: user || "root",
+    source: filePath,
+    enabled: enabled,
+    description: description || null,
+    task_name: taskName,
+    is_custom: true, // Marqueur pour identifier les tâches créées via add-cron
+  };
+}
+
+/**
+ * Récupère les tâches cron personnalisées depuis /etc/cron.d/
+ * @returns {Promise<Array>} Liste des tâches cron personnalisées
+ */
+async function getCustomCronJobs() {
+  const jobs = [];
+  const cronDDir = "/etc/cron.d";
+
+  try {
+    // Vérifier si le répertoire existe
+    const checkDirResult = await executeHostCommand(
+      `test -d '${cronDDir}' && echo 'exists' || echo 'not_exists'`
+    );
+    if (checkDirResult.stdout.trim() !== "exists") {
+      logger.debug("Le répertoire /etc/cron.d n'existe pas");
+      return jobs;
+    }
+
+    // Lister tous les fichiers commençant par "agent-cron-"
+    const listResult = await executeHostCommand(
+      `ls -1 '${cronDDir}'/agent-cron-* 2>/dev/null || echo ''`
+    );
+
+    const files = listResult.stdout
+      .trim()
+      .split("\n")
+      .filter((line) => line.trim().length > 0);
+
+    if (files.length === 0) {
+      logger.debug("Aucun fichier agent-cron- trouvé dans /etc/cron.d/");
+      return jobs;
+    }
+
+    // Lire et parser chaque fichier
+    for (const filePath of files) {
+      try {
+        const readResult = await executeHostCommand(
+          `cat '${filePath}' 2>/dev/null || echo ''`
+        );
+        const content = readResult.stdout || "";
+
+        if (!content.trim()) {
+          logger.debug(`Fichier vide: ${filePath}`);
+          continue;
+        }
+
+        const parsed = parseCustomCronFile(content, filePath);
+        if (parsed) {
+          logger.debug(`Tâche cron personnalisée parsée: ${parsed.task_name}`);
+          jobs.push(parsed);
+        } else {
+          logger.debug(`Impossible de parser le fichier: ${filePath}`);
+        }
+      } catch (error) {
+        logger.warn(
+          "Erreur lors de la lecture d'un fichier cron personnalisé",
+          {
+            filePath,
+            error: error.message,
+          }
+        );
+        continue;
+      }
+    }
+  } catch (error) {
+    logger.warn(
+      "Erreur lors de la récupération des tâches cron personnalisées",
+      {
+        error: error.message,
+      }
+    );
+  }
+
+  return jobs;
+}
+
+/**
+ * Liste uniquement les tâches cron créées via add-cron (fichiers agent-cron-* dans /etc/cron.d/)
  * @param {Object} params - Paramètres (non utilisés pour l'instant)
  * @param {Object} [callbacks] - Callbacks (non utilisés pour cette action)
- * @returns {Promise<Array>} Liste de toutes les tâches cron trouvées
+ * @returns {Promise<Array>} Liste des tâches cron personnalisées
  */
 export async function listCronJobs(params = {}, callbacks = {}) {
   try {
     validateCronParams("list", params);
 
-    logger.info("Début de la récupération des tâches cron");
-
-    const allJobs = [];
-
-    // 1. Récupérer les tâches cron système depuis /etc/crontab
-    logger.debug("Étape 1: Lecture de /etc/crontab");
-    const systemJobs = await getSystemCronJobs();
-    allJobs.push(...systemJobs);
-    logger.info(`Trouvé ${systemJobs.length} tâches cron système`);
-
-    // 2. Récupérer tous les utilisateurs système (comme dans SSH)
-    logger.debug("Étape 2: Récupération de tous les utilisateurs système");
-    const users = await getSystemUsers();
-    logger.info(`Trouvé ${users.length} utilisateurs à traiter`);
-
-    // 3. Parcourir chaque utilisateur pour récupérer ses tâches cron
-    logger.debug("Étape 3: Parcours de tous les utilisateurs");
-    for (const username of users) {
-      try {
-        // Essayer d'abord de lire directement depuis les fichiers
-        const possiblePaths = [
-          `/var/spool/cron/crontabs/${username}`,
-          `/var/spool/cron/${username}`,
-        ];
-
-        let userJobs = [];
-
-        // Essayer de lire depuis les fichiers
-        for (const filePath of possiblePaths) {
-          if (existsSync(filePath)) {
-            try {
-              const content = readFileSync(filePath, "utf-8");
-              const lines = content.split("\n");
-              logger.debug(
-                `Lecture de ${filePath}: ${lines.length} lignes pour ${username}`
-              );
-
-              for (const line of lines) {
-                const parsed = parseCronLine(line, username, filePath);
-                if (parsed) {
-                  logger.debug(
-                    `Tâche cron parsée depuis fichier pour ${username}: ${parsed.command.substring(
-                      0,
-                      50
-                    )}...`
-                  );
-                  userJobs.push(parsed);
-                }
-              }
-              break; // Si on a trouvé et lu le fichier, pas besoin d'essayer les autres
-            } catch (error) {
-              logger.debug(`Erreur lors de la lecture de ${filePath}`, {
-                error: error.message,
-                code: error.code,
-              });
-              // Si permission denied, essayer avec sudo cat
-              if (
-                error.code === "EACCES" ||
-                error.message.includes("permission denied") ||
-                error.message.includes("EACCES")
-              ) {
-                try {
-                  logger.debug(`Tentative avec sudo cat pour ${filePath}`);
-                  const { stdout } = await executeCommand(
-                    `sudo cat ${filePath}`,
-                    { timeout: 5000 }
-                  );
-                  if (stdout && stdout.trim()) {
-                    const lines = stdout.split("\n");
-                    logger.debug(
-                      `Lecture avec sudo réussie: ${lines.length} lignes`
-                    );
-                    for (const line of lines) {
-                      const parsed = parseCronLine(line, username, filePath);
-                      if (parsed) {
-                        logger.debug(
-                          `Tâche cron parsée avec sudo pour ${username}: ${parsed.command.substring(
-                            0,
-                            50
-                          )}...`
-                        );
-                        userJobs.push(parsed);
-                      }
-                    }
-                    break;
-                  }
-                } catch (sudoError) {
-                  logger.debug(`Erreur avec sudo cat pour ${filePath}`, {
-                    error: sudoError.message,
-                  });
-                }
-              }
-            }
-          }
-        }
-
-        // Si aucun fichier trouvé, essayer avec crontab -l
-        if (userJobs.length === 0) {
-          const crontabJobs = await getUserCronJobs(username);
-          userJobs.push(...crontabJobs);
-        }
-
-        // Ajouter les jobs trouvés (éviter les doublons)
-        if (userJobs.length > 0) {
-          logger.debug(`Trouvé ${userJobs.length} tâches pour ${username}`);
-          for (const job of userJobs) {
-            const isDuplicate = allJobs.some(
-              (existingJob) =>
-                existingJob.command === job.command &&
-                existingJob.user === job.user &&
-                existingJob.schedule.minute === job.schedule.minute &&
-                existingJob.schedule.hour === job.schedule.hour &&
-                existingJob.schedule.day === job.schedule.day &&
-                existingJob.schedule.month === job.schedule.month &&
-                existingJob.schedule.weekday === job.schedule.weekday
-            );
-            if (!isDuplicate) {
-              allJobs.push(job);
-            }
-          }
-        }
-      } catch (error) {
-        logger.debug("Erreur lors du traitement de l'utilisateur", {
-          username,
-          error: error.message,
-        });
-        // Continuer avec le prochain utilisateur
-      }
-    }
-
-    // 4. Essayer aussi via commande système (fallback supplémentaire)
-    if (allJobs.length === 0) {
-      logger.debug("Étape 4: Tentative via commande système");
-      const commandJobs = await getAllCronJobsViaCommand();
-      allJobs.push(...commandJobs);
-      logger.info(
-        `Trouvé ${commandJobs.length} tâches cron via commande système`
-      );
-    }
-
     logger.info(
-      `Récupération terminée : ${allJobs.length} tâches cron trouvées au total`
+      "Début de la récupération des tâches cron personnalisées (agent-cron-*)"
+    );
+
+    // Récupérer uniquement les tâches cron créées via add-cron
+    const customCronJobs = await getCustomCronJobs();
+    logger.info(
+      `Récupération terminée : ${customCronJobs.length} tâches cron personnalisées trouvées`
     );
 
     // Log de debug pour voir quelques exemples
-    if (allJobs.length > 0) {
+    if (customCronJobs.length > 0) {
       logger.debug("Exemples de tâches trouvées:", {
-        examples: allJobs.slice(0, 3).map((j) => ({
+        examples: customCronJobs.slice(0, 3).map((j) => ({
+          task_name: j.task_name,
           user: j.user,
           schedule: `${j.schedule.minute} ${j.schedule.hour} ${j.schedule.day} ${j.schedule.month} ${j.schedule.weekday}`,
           command: j.command.substring(0, 50),
+          enabled: j.enabled,
         })),
       });
     } else {
-      logger.warn(
-        "Aucune tâche cron trouvée. Vérifiez les permissions et les emplacements des fichiers."
-      );
+      logger.debug("Aucune tâche cron personnalisée trouvée dans /etc/cron.d/");
     }
 
-    return allJobs;
+    return customCronJobs;
   } catch (error) {
     logger.error("Erreur lors de la récupération des tâches cron", {
       error: error.message,
