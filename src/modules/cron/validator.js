@@ -10,7 +10,7 @@
 /**
  * Liste blanche des actions Cron autorisées
  */
-const ALLOWED_CRON_ACTIONS = ["list", "add-cron"];
+const ALLOWED_CRON_ACTIONS = ["list", "add-cron", "delete-cron"];
 
 /**
  * Valide qu'une action Cron est autorisée
@@ -249,6 +249,25 @@ export function validateParams(action, params) {
         user,
         description,
         enabled,
+      };
+    case "delete-cron":
+      if (!params || typeof params !== "object") {
+        throw new Error("Les paramètres doivent être un objet");
+      }
+
+      // Validation task_name
+      if (!params.task_name || typeof params.task_name !== "string") {
+        throw new Error(
+          "task_name est requis et doit être une chaîne de caractères"
+        );
+      }
+      const trimmedTaskName = params.task_name.trim();
+      if (!trimmedTaskName) {
+        throw new Error("task_name ne peut pas être vide");
+      }
+
+      return {
+        task_name: trimmedTaskName,
       };
     default:
       return params;
