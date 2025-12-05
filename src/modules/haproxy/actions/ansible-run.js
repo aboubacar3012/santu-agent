@@ -337,19 +337,25 @@ backend default_error_backend
       `[ -f '${haproxy_backend_dir}/default-backend.cfg' ] && cat '${haproxy_backend_dir}/default-backend.cfg' >> '${haproxy_config_file}' || true`,
     ];
 
-    for (const cmd of assembleCommands) {
+    // La première commande est critique (création du fichier de base)
+    const firstCommand = assembleCommands[0];
+    const firstResult = await executeHostCommand(firstCommand);
+    if (firstResult.error) {
+      throw new Error(
+        `Erreur lors de l'assemblage de la configuration: ${firstResult.stderr}`
+      );
+    }
+
+    // Les autres commandes sont optionnelles (elles ont || true)
+    for (let i = 1; i < assembleCommands.length; i++) {
+      const cmd = assembleCommands[i];
       const assembleResult = await executeHostCommand(cmd);
-      if (assembleResult.error && !cmd.includes("|| true")) {
-        logger.warn("Erreur lors de l'assemblage", {
+      if (assembleResult.error) {
+        logger.warn("Erreur lors de l'assemblage (non bloquant)", {
           command: cmd,
           stderr: assembleResult.stderr,
         });
       }
-    }
-    if (assembleResult.error) {
-      throw new Error(
-        `Erreur lors de l'assemblage de la configuration: ${assembleResult.stderr}`
-      );
     }
 
     // ÉTAPE 6: Vérification de la syntaxe
