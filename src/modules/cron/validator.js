@@ -132,7 +132,7 @@ export function validateParams(action, params) {
     case "list":
       // Pour l'instant, pas de paramètres requis pour list
       return {};
-    case "add-cron":
+    case "add-cron": {
       if (!params || typeof params !== "object") {
         throw new Error("Les paramètres doivent être un objet");
       }
@@ -250,7 +250,8 @@ export function validateParams(action, params) {
         description,
         enabled,
       };
-    case "delete-cron":
+    }
+    case "delete-cron": {
       if (!params || typeof params !== "object") {
         throw new Error("Les paramètres doivent être un objet");
       }
@@ -269,6 +270,7 @@ export function validateParams(action, params) {
       return {
         task_name: trimmedTaskName,
       };
+    }
     default:
       return params;
   }
