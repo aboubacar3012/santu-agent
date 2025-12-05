@@ -12,6 +12,7 @@ import * as validator from "./validator.js";
 // Mapping des noms d'actions vers les fonctions
 const actions = {
   list: actionsModule.listHaproxyConfig,
+  "add-app": actionsModule.addHaproxyApp,
 };
 
 export { actions, validator };

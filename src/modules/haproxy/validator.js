@@ -10,7 +10,7 @@
 /**
  * Liste blanche des actions HAProxy autorisées
  */
-const ALLOWED_HAPROXY_ACTIONS = ["list"];
+const ALLOWED_HAPROXY_ACTIONS = ["list", "add-app"];
 
 /**
  * Valide qu'une action HAProxy est autorisée
@@ -53,6 +53,84 @@ export function validateParams(action, params) {
     case "list":
       // Pour l'instant, pas de paramètres requis pour list
       return {};
+    case "add-app":
+      if (!params || typeof params !== "object") {
+        throw new Error("Les paramètres doivent être un objet");
+      }
+
+      // Validation app_name
+      if (!params.app_name || typeof params.app_name !== "string") {
+        throw new Error(
+          "app_name est requis et doit être une chaîne de caractères"
+        );
+      }
+      const trimmedAppName = params.app_name.trim();
+      if (!trimmedAppName) {
+        throw new Error("app_name ne peut pas être vide");
+      }
+      // Validation regex : lettres, chiffres, tirets, 3-63 caractères
+      const appNameRegex = /^[a-zA-Z][a-zA-Z0-9-]{1,62}$/;
+      if (!appNameRegex.test(trimmedAppName)) {
+        throw new Error(
+          "app_name est invalide. Utilisez uniquement des lettres, chiffres et tirets (3-63 caractères, commençant par une lettre)."
+        );
+      }
+
+      // Validation app_domain
+      if (!params.app_domain || typeof params.app_domain !== "string") {
+        throw new Error(
+          "app_domain est requis et doit être une chaîne de caractères"
+        );
+      }
+      const trimmedDomain = params.app_domain.trim();
+      if (!trimmedDomain) {
+        throw new Error("app_domain ne peut pas être vide");
+      }
+      // Validation format domaine
+      const domainRegex = /^(?!-)(?:[a-zA-Z0-9-]{1,63}\.)+[a-zA-Z]{2,}$/;
+      if (!domainRegex.test(trimmedDomain)) {
+        throw new Error(
+          "app_domain est invalide. Utilisez un domaine au format exemple.elyamaje.com."
+        );
+      }
+
+      // Validation app_backend_port
+      if (
+        params.app_backend_port === undefined ||
+        params.app_backend_port === null
+      ) {
+        throw new Error("app_backend_port est requis");
+      }
+      const parsedPort = Number.parseInt(String(params.app_backend_port), 10);
+      if (Number.isNaN(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+        throw new Error("app_backend_port doit être un port valide (1-65535)");
+      }
+
+      // app_backend_host (optionnel, défaut: "127.0.0.1")
+      const appBackendHost =
+        params.app_backend_host && typeof params.app_backend_host === "string"
+          ? params.app_backend_host.trim()
+          : "127.0.0.1";
+
+      // app_slug (optionnel, généré automatiquement si non fourni)
+      let appSlug = params.app_slug;
+      if (!appSlug || typeof appSlug !== "string" || !appSlug.trim()) {
+        // Générer le slug automatiquement
+        appSlug = trimmedAppName
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "");
+      } else {
+        appSlug = appSlug.trim();
+      }
+
+      return {
+        app_name: trimmedAppName,
+        app_domain: trimmedDomain,
+        app_backend_host: appBackendHost,
+        app_backend_port: parsedPort,
+        app_slug: appSlug,
+      };
     default:
       return params;
   }
