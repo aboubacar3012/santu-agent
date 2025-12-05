@@ -41,26 +41,61 @@ function parseCustomCronFile(content, filePath) {
     // Si c'est la première ligne non vide du fichier
     if (!firstNonEmptyLineFound) {
       firstNonEmptyLineFound = true;
+      logger.debug("Première ligne non vide trouvée", {
+        filePath,
+        line: trimmed,
+        startsWithHash: trimmed.startsWith("#"),
+      });
 
       // Vérifier si c'est un commentaire de description (pas une ligne cron commentée)
       // Une ligne cron commentée commence par # suivi d'un chiffre, *, /, -, ou une virgule
       if (trimmed.startsWith("#")) {
         // Vérifier si ce n'est PAS une ligne cron commentée
         const isCommentedCronLine = trimmed.match(/^#\s*[\d\*\/\-\,\s]/);
+        logger.debug("Vérification ligne cron commentée", {
+          filePath,
+          line: trimmed,
+          isCommentedCronLine: !!isCommentedCronLine,
+        });
+
         if (!isCommentedCronLine) {
           // C'est une description sur la première ligne
           // Extraire tout ce qui suit le # et les espaces éventuels
           const descText = trimmed.substring(1).trim();
+          logger.debug("Extraction description", {
+            filePath,
+            descText,
+            isEmpty: !descText,
+          });
+
           if (descText) {
             description = descText;
-            logger.debug("Description trouvée", {
+            logger.debug("Description trouvée et assignée", {
               filePath,
               description,
               originalLine: trimmed,
             });
+          } else {
+            logger.debug("Description vide après extraction", {
+              filePath,
+              originalLine: trimmed,
+            });
           }
           continue; // Passer à la ligne suivante
+        } else {
+          logger.debug(
+            "Ligne détectée comme cron commentée, pas de description",
+            {
+              filePath,
+              line: trimmed,
+            }
+          );
         }
+      } else {
+        logger.debug("Première ligne ne commence pas par #", {
+          filePath,
+          line: trimmed,
+        });
       }
       // Si la première ligne n'est pas un commentaire de description,
       // elle doit être une ligne cron, on la traitera ci-dessous
@@ -102,7 +137,7 @@ function parseCustomCronFile(content, filePath) {
     .replace(/^agent-cron-/, "")
     .replace(/\.(cfg|conf)?$/, "");
 
-  return {
+  const result = {
     schedule: {
       minute: minute || "*",
       hour: hour || "*",
@@ -118,6 +153,15 @@ function parseCustomCronFile(content, filePath) {
     task_name: taskName,
     is_custom: true, // Marqueur pour identifier les tâches créées via add-cron
   };
+
+  logger.debug("Résultat du parsing", {
+    filePath,
+    taskName,
+    description: result.description,
+    hasDescription: !!result.description,
+  });
+
+  return result;
 }
 
 /**
