@@ -166,9 +166,10 @@ export async function runHaproxyAnsible(params = {}, callbacks = {}) {
 # Ce bloc pose toutes les fondations (logs, sécurité, utilisateur système) partagées par toute la conf.
 global
     # Journal principal : toutes les requêtes passent par syslog local0.
-    log /dev/log local0
+    # len 4096 permet de supporter des logs plus longs (avec tous les headers)
+    log /dev/log len 4096 local0
     # Journal secondaire pour les événements importants (notice).
-    log /dev/log local1 notice
+    log /dev/log len 4096 local1 notice
     # On enferme HAProxy dans /var/lib/haproxy pour réduire la surface d'attaque.
     chroot /var/lib/haproxy
     # Socket d'administration pour piloter HAProxy en live (stats, enable/disable, etc.).
@@ -222,7 +223,7 @@ defaults
     option dontlognull
     # Format de log personnalisé
     # Format de log personnalisé - Version enrichie avec toutes les informations disponibles
-    log-format "{ \\\"timestamp\\\":\\\"%t\\\", \\\"client\\\":{\\\"ip\\\":\\\"%ci\\\",\\\"port\\\":%cp}, \\\"request\\\":{\\\"method\\\":\\\"%HM\\\",\\\"path\\\":\\\"%HP\\\",\\\"query\\\":\\\"%HQ\\\",\\\"version\\\":\\\"%HV\\\"}, \\\"response\\\":{\\\"status\\\":%ST,\\\"bytes_read\\\":%B,\\\"bytes_uploaded\\\":%U}, \\\"routing\\\":{\\\"backend\\\":\\\"%b\\\",\\\"server\\\":\\\"%s\\\",\\\"server_queue\\\":%sq,\\\"backend_queue\\\":%bq}, \\\"timing\\\":{\\\"total_ms\\\":%Tt,\\\"connect_ms\\\":%Tc,\\\"response_ms\\\":%Tr,\\\"request_ms\\\":%Ta}, \\\"ssl\\\":{\\\"version\\\":\\\"%sslv\\\",\\\"cipher\\\":\\\"%sslc\\\"}, \\\"request_headers\\\":\\\"%hr\\\" }"
+    log-format "{ \\\"timestamp\\\":\\\"%t\\\", \\\"client\\\":{\\\"ip\\\":\\\"%ci\\\",\\\"port\\\":%cp}, \\\"request\\\":{\\\"method\\\":\\\"%HM\\\",\\\"path\\\":\\\"%HP\\\",\\\"query\\\":\\\"%HQ\\\",\\\"version\\\":\\\"%HV\\\"}, \\\"response\\\":{\\\"status\\\":%ST,\\\"bytes_read\\\":%B,\\\"bytes_uploaded\\\":%U}, \\\"routing\\\":{\\\"backend\\\":\\\"%b\\\",\\\"server\\\":\\\"%s\\\",\\\"server_queue\\\":%sq,\\\"backend_queue\\\":%bq}, \\\"timing\\\":{\\\"total_ms\\\":%Tt,\\\"connect_ms\\\":%Tc,\\\"response_ms\\\":%Tr,\\\"request_ms\\\":%Ta}, \\\"ssl\\\":{\\\"version\\\":\\\"%sslv\\\",\\\"cipher\\\":\\\"%sslc\\\"}, \\\"request_headers\\\":\\\"%hr\\\", \\\"response_headers\\\":\\\"%hs\\\" }"
     # Délai maxi pour se connecter à un serveur backend.
     timeout connect 30000ms
     # Délai maxi pour qu'un client reste branché.
@@ -275,6 +276,9 @@ frontend web-in
     # On reste en mode HTTP et on trace finement les requêtes pour le support.
     mode http
     option http-server-close
+    # Capture de tous les headers HTTP pour les logs
+    http-request capture req.hdrs len 2048
+    http-response capture res.hdrs len 2048
     # Ajoute systématiquement X-Forwarded-For/X-Forwarded-Proto pour les backends.
     option forwardfor
 
