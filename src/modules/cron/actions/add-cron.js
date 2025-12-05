@@ -1,0 +1,139 @@
+/**
+ * Action add-cron - Ajoute une tâche cron dans /etc/cron.d/
+ *
+ * @module modules/cron/actions/add-cron
+ */
+
+import { logger } from "../../../shared/logger.js";
+import { validateCronParams } from "../validator.js";
+import { executeHostCommand, hostFileExists } from "./utils.js";
+
+/**
+ * Génère un nom de fichier slug à partir d'un nom de tâche
+ * @param {string} taskName - Nom de la tâche
+ * @returns {string} Nom de fichier slug
+ */
+function generateFileName(taskName) {
+  return taskName
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s_-]/g, "") // Supprimer les caractères spéciaux
+    .replace(/\s+/g, "-") // Remplacer les espaces par des tirets
+    .replace(/-+/g, "-") // Remplacer les tirets multiples par un seul
+    .replace(/^-+|-+$/g, ""); // Supprimer les tirets en début/fin
+}
+
+/**
+ * Ajoute une tâche cron dans /etc/cron.d/
+ * @param {Object} params - Paramètres de la tâche cron
+ * @param {string} params.task_name - Nom de la tâche
+ * @param {string} params.command - Commande à exécuter
+ * @param {Object} params.schedule - Planification (minute, hour, day, month, weekday)
+ * @param {string} [params.user] - Utilisateur (défaut: "root")
+ * @param {string} [params.description] - Description optionnelle
+ * @param {boolean} [params.enabled] - Tâche active (défaut: true)
+ * @param {Object} [callbacks] - Callbacks (non utilisés pour cette action)
+ * @returns {Promise<Object>} Résultat de l'opération
+ */
+export async function addCronJob(params = {}, callbacks = {}) {
+  try {
+    // Valider les paramètres
+    const validatedParams = validateCronParams("add-cron", params);
+    const { task_name, command, schedule, user, description, enabled } =
+      validatedParams;
+
+    logger.debug("Début de l'ajout d'une tâche cron", {
+      task_name,
+      user,
+      enabled,
+    });
+
+    const cronDir = "/etc/cron.d";
+    const fileName = generateFileName(task_name);
+
+    if (!fileName) {
+      throw new Error(
+        "Impossible de générer un nom de fichier valide à partir du nom de la tâche"
+      );
+    }
+
+    const filePath = `${cronDir}/${fileName}`;
+
+    // Vérifier si le fichier existe déjà
+    const fileExists = await hostFileExists(filePath);
+    if (fileExists) {
+      throw new Error(
+        `Une tâche cron avec le nom "${task_name}" existe déjà. Veuillez choisir un autre nom.`
+      );
+    }
+
+    // S'assurer que le répertoire /etc/cron.d existe
+    const mkdirResult = await executeHostCommand(
+      `mkdir -p '${cronDir}' && chmod 755 '${cronDir}'`
+    );
+    if (mkdirResult.error) {
+      logger.warn("Erreur lors de la création du répertoire cron.d", {
+        stderr: mkdirResult.stderr,
+      });
+    }
+
+    // Construire le contenu du fichier
+    let fileContent = "";
+
+    // Ajouter la description en commentaire si fournie
+    if (description) {
+      fileContent += `# ${description}\n`;
+    }
+
+    // Construire la ligne cron
+    // Format: minute hour day month weekday user command
+    // Si enabled est false, commenter la ligne
+    const cronLine = `${schedule.minute} ${schedule.hour} ${schedule.day} ${schedule.month} ${schedule.weekday} ${user} ${command}`;
+
+    if (enabled) {
+      fileContent += `${cronLine}\n`;
+    } else {
+      // Si désactivé, commenter la ligne
+      fileContent += `# ${cronLine}\n`;
+    }
+
+    // Échapper le contenu pour l'utiliser dans une commande shell
+    const escapedContent = fileContent
+      .replace(/\\/g, "\\\\")
+      .replace(/'/g, "'\"'\"'")
+      .replace(/\$/g, "\\$")
+      .replace(/`/g, "\\`");
+
+    // Créer le fichier
+    logger.debug("Création du fichier cron", { filePath });
+    const writeResult = await executeHostCommand(
+      `printf '%s' '${escapedContent}' > '${filePath}' && chmod 644 '${filePath}' && chown root:root '${filePath}'`
+    );
+
+    if (writeResult.error) {
+      throw new Error(
+        `Erreur lors de la création du fichier cron: ${writeResult.stderr}`
+      );
+    }
+
+    logger.info("Tâche cron créée avec succès", {
+      task_name,
+      filePath,
+      enabled,
+    });
+
+    return {
+      success: true,
+      task_name,
+      file_path: filePath,
+      enabled,
+      message: `Tâche cron "${task_name}" créée avec succès dans ${filePath}`,
+    };
+  } catch (error) {
+    logger.error("Erreur lors de l'ajout de la tâche cron", {
+      error: error.message,
+      stack: error.stack,
+    });
+    throw error;
+  }
+}

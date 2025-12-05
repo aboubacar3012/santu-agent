@@ -7,11 +7,13 @@
  */
 
 import { listCronJobs } from "./actions/list.js";
+import { addCronJob } from "./actions/add-cron.js";
 import * as validator from "./validator.js";
 
 // Mapping des noms d'actions vers les fonctions
 const actions = {
   list: listCronJobs,
+  "add-cron": addCronJob,
 };
 
 export { actions, validator };
