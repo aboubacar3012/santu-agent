@@ -73,21 +73,29 @@ export async function applyUfwRules(params = {}, callbacks = {}) {
       try {
         const result = await executeUfwCommand(preparedCommand);
 
+        // UFW peut retourner un code de sortie 0 même en cas d'erreur
+        // Il faut vérifier stderr pour détecter les erreurs UFW
+        const hasError =
+          result.error || (result.stderr && result.stderr.includes("ERROR:"));
+        const errorMessage = result.error
+          ? result.error.message || String(result.error)
+          : result.stderr && result.stderr.includes("ERROR:")
+          ? result.stderr.trim()
+          : null;
+
         results.push({
           command: originalCommand,
-          success: !result.error,
+          success: !hasError,
           stdout: result.stdout || "",
           stderr: result.stderr || "",
-          error: result.error
-            ? result.error.message || String(result.error)
-            : null,
+          error: errorMessage,
         });
 
         // Si une commande échoue, logger mais continuer avec les autres
-        if (result.error) {
+        if (hasError) {
           logger.warn(`La commande ${i + 1} a échoué`, {
             command: originalCommand,
-            error: result.error.message || result.error,
+            error: errorMessage,
             stderr: result.stderr,
           });
         } else {
