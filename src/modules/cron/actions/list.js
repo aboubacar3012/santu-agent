@@ -23,30 +23,36 @@ function parseCustomCronFile(content, filePath) {
   let description = null;
   let cronLine = null;
   let enabled = true;
-  let descriptionFound = false;
+  let firstNonEmptyLineFound = false;
 
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed) continue;
+
+    // Ignorer les lignes vides jusqu'à trouver la première ligne non vide
+    if (!trimmed) {
+      continue;
+    }
 
     // Si on a déjà trouvé la ligne cron, on arrête
     if (cronLine) {
       break;
     }
 
-    // Ligne de description (commentaire commençant par # mais pas une ligne cron commentée)
-    // On ne prend que le PREMIER commentaire qui n'est pas une ligne cron
-    if (
-      !descriptionFound &&
-      trimmed.startsWith("#") &&
-      !trimmed.match(/^#\s*[\d\*\/\-\,\s]+/)
-    ) {
-      const descMatch = trimmed.match(/^#\s*(.+)$/);
-      if (descMatch) {
-        description = descMatch[1].trim();
-        descriptionFound = true;
+    // Si c'est la première ligne non vide du fichier
+    if (!firstNonEmptyLineFound) {
+      firstNonEmptyLineFound = true;
+
+      // Vérifier si c'est un commentaire de description (pas une ligne cron commentée)
+      if (trimmed.startsWith("#") && !trimmed.match(/^#\s*[\d\*\/\-\,\s]+/)) {
+        // C'est une description sur la première ligne
+        const descMatch = trimmed.match(/^#\s*(.+)$/);
+        if (descMatch) {
+          description = descMatch[1].trim();
+        }
+        continue; // Passer à la ligne suivante
       }
-      continue;
+      // Si la première ligne n'est pas un commentaire de description,
+      // elle doit être une ligne cron, on la traitera ci-dessous
     }
 
     // Ligne cron (active ou commentée)
