@@ -6,14 +6,16 @@
  * @module modules/haproxy/index
  */
 
-import * as actionsModule from "./actions.js";
+import { listHaproxyConfig } from "./actions/list.js";
+import { addHaproxyApp } from "./actions/add-app.js";
+import { listHaproxyApps } from "./actions/app-list.js";
 import * as validator from "./validator.js";
 
 // Mapping des noms d'actions vers les fonctions
 const actions = {
-  list: actionsModule.listHaproxyConfig,
-  "add-app": actionsModule.addHaproxyApp,
-  "app-list": actionsModule.listHaproxyApps,
+  list: listHaproxyConfig,
+  "add-app": addHaproxyApp,
+  "app-list": listHaproxyApps,
 };
 
 export { actions, validator };
