@@ -48,14 +48,19 @@ function parseCustomCronFile(content, filePath) {
       });
 
       // Vérifier si c'est un commentaire de description (pas une ligne cron commentée)
-      // Une ligne cron commentée commence par # suivi d'un chiffre, *, /, -, ou une virgule
+      // Une ligne cron commentée commence par # suivi directement ou après espaces d'un chiffre, *, /, -, ou virgule
+      // Une description commence par # suivi d'espaces puis d'une lettre ou autre caractère non-cron
       if (trimmed.startsWith("#")) {
-        // Vérifier si ce n'est PAS une ligne cron commentée
-        const isCommentedCronLine = trimmed.match(/^#\s*[\d\*\/\-\,\s]/);
+        // Vérifier si c'est une ligne cron commentée
+        // Format: # minute hour day month weekday user command
+        // On cherche # suivi de zéro ou plusieurs espaces puis un chiffre, *, /, -, ou virgule
+        // Mais on exclut le cas où il y a un espace suivi d'une lettre (description)
+        const isCommentedCronLine = trimmed.match(/^#\s*[\d\*\/\-\,]/);
         logger.debug("Vérification ligne cron commentée", {
           filePath,
           line: trimmed,
           isCommentedCronLine: !!isCommentedCronLine,
+          matchResult: trimmed.match(/^#\s*[\d\*\/\-\,]/),
         });
 
         if (!isCommentedCronLine) {
