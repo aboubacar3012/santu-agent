@@ -1,17 +1,13 @@
 /**
- * Actions SSH pour l'agent.
+ * Utilitaires pour les actions SSH
  *
- * Ce module encapsule toutes les opérations autorisées sur les clés SSH afin de :
- * - centraliser la récupération des clés SSH du serveur,
- * - éliminer les doublons,
- * - fournir des réponses formatées prêtes à être envoyées via WebSocket.
+ * Fonctions partagées utilisées par les actions SSH.
  *
- * @module modules/ssh/actions
+ * @module modules/ssh/actions/utils
  */
 
-import { logger } from "../../shared/logger.js";
-import { executeCommand } from "../../shared/executor.js";
-import { validateSshParams } from "./validator.js";
+import { logger } from "../../../shared/logger.js";
+import { executeCommand } from "../../../shared/executor.js";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 
@@ -20,7 +16,7 @@ import { join } from "path";
  * @param {string} line - Ligne de clé SSH
  * @returns {Object|null} Clé parsée ou null si invalide
  */
-function parseSshKey(line) {
+export function parseSshKey(line) {
   // Nettoyer la ligne (enlever les commentaires, espaces)
   const cleaned = line.trim();
   if (!cleaned || cleaned.startsWith("#")) {
@@ -66,7 +62,7 @@ function parseSshKey(line) {
  * @param {string} publicKey - Clé publique complète
  * @returns {Promise<string|null>} Fingerprint ou null si erreur
  */
-async function getFingerprint(publicKey) {
+export async function getFingerprint(publicKey) {
   try {
     // Utiliser ssh-keygen pour obtenir le fingerprint
     const { stdout, stderr, error } = await executeCommand(
@@ -100,7 +96,7 @@ async function getFingerprint(publicKey) {
  * Récupère la liste des utilisateurs système
  * @returns {Promise<Array<string>>} Liste des utilisateurs
  */
-async function getSystemUsers() {
+export async function getSystemUsers() {
   try {
     // Utiliser getent passwd pour obtenir tous les utilisateurs
     const { stdout, stderr, error } = await executeCommand("getent passwd", {
@@ -144,7 +140,7 @@ async function getSystemUsers() {
  * @param {string} username - Nom d'utilisateur
  * @returns {Promise<string|null>} Chemin du home ou null
  */
-async function getUserHome(username) {
+export async function getUserHome(username) {
   try {
     const { stdout, stderr, error } = await executeCommand(
       `getent passwd ${username} | cut -d: -f6`,
@@ -171,7 +167,7 @@ async function getUserHome(username) {
  * @param {string} homeDir - Répertoire home de l'utilisateur
  * @returns {Promise<Array<Object>>} Liste des clés trouvées avec métadonnées
  */
-async function getUserSshKeys(username, homeDir) {
+export async function getUserSshKeys(username, homeDir) {
   const keys = [];
   const sshDir = join(homeDir, ".ssh");
 
@@ -245,82 +241,3 @@ async function getUserSshKeys(username, homeDir) {
   return keys;
 }
 
-/**
- * Liste toutes les clés SSH du serveur (avec duplication si une clé apparaît plusieurs fois)
- * @param {Object} params - Paramètres (non utilisés pour l'instant)
- * @param {Object} [callbacks] - Callbacks (non utilisés pour cette action)
- * @returns {Promise<Array>} Liste de toutes les clés SSH trouvées (une entrée par occurrence)
- */
-export async function listSshKeys(params = {}, callbacks = {}) {
-  try {
-    validateSshParams("list", params);
-
-    logger.debug("Début de la récupération des clés SSH");
-
-    // Récupérer tous les utilisateurs
-    const users = await getSystemUsers();
-    logger.debug(`Trouvé ${users.length} utilisateurs`);
-
-    // Map pour regrouper les clés identiques par publicKey
-    const keysMap = new Map();
-
-    // Parcourir chaque utilisateur
-    for (const username of users) {
-      try {
-        const homeDir = await getUserHome(username);
-        if (!homeDir) {
-          continue;
-        }
-
-        const userKeys = await getUserSshKeys(username, homeDir);
-
-        // Ajouter chaque clé trouvée au tableau (regroupement par publicKey)
-        for (const key of userKeys) {
-          const keyId = key.publicKey.trim();
-
-          if (keysMap.has(keyId)) {
-            // Clé déjà trouvée, ajouter user et source si pas déjà présents
-            const existing = keysMap.get(keyId);
-            if (!existing.users.includes(username)) {
-              existing.users.push(username);
-            }
-            if (key.source && !existing.sources.includes(key.source)) {
-              existing.sources.push(key.source);
-            }
-          } else {
-            // Nouvelle clé
-            keysMap.set(keyId, {
-              publicKey: key.publicKey,
-              type: key.type,
-              users: [username],
-              sources: key.source ? [key.source] : [],
-              fingerprint: null, // Sera rempli plus tard si nécessaire
-            });
-          }
-        }
-      } catch (error) {
-        logger.debug("Erreur lors du traitement de l'utilisateur", {
-          username,
-          error: error.message,
-        });
-        // Continuer avec le prochain utilisateur
-      }
-    }
-
-    // Convertir la Map en tableau
-    const allKeys = Array.from(keysMap.values());
-
-    // Optionnel : récupérer les fingerprints (peut être lent)
-    // Pour l'instant, on les laisse à null pour des raisons de performance
-    // Si besoin, on peut les récupérer en parallèle avec Promise.all
-
-    logger.info(`Récupération terminée : ${allKeys.length} clés SSH trouvées`);
-
-    return allKeys;
-  } catch (error) {
-    logger.error("Erreur lors de la récupération des clés SSH", {
-      error: error.message,
-    });
-    throw error;
-  }
-}

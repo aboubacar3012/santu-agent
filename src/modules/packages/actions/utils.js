@@ -1,11 +1,15 @@
+/**
+ * Utilitaires pour les actions Packages
+ *
+ * Fonctions partagées utilisées par les actions Packages.
+ *
+ * @module modules/packages/actions/utils
+ */
+
 import { readFileSync, existsSync, statSync } from "fs";
-import { logger } from "../../shared/logger.js";
-import { executeCommand } from "../../shared/executor.js";
-import { validatePackagesParams } from "./validator.js";
+import { logger } from "../../../shared/logger.js";
 
-const SUPPORTED_MANAGERS = ["apt"];
-
-function parseOsRelease() {
+export function parseOsRelease() {
   try {
     const osReleasePath = "/etc/os-release";
 
@@ -65,7 +69,7 @@ function parseOsRelease() {
   }
 }
 
-function detectPackageManager() {
+export function detectPackageManager() {
   const osInfo = parseOsRelease();
   const id = (osInfo.ID || "").toLowerCase();
   const idLike = (osInfo.ID_LIKE || "").toLowerCase();
@@ -88,10 +92,89 @@ function detectPackageManager() {
 }
 
 /**
+ * Fallback : lire les packages depuis /var/lib/dpkg/status
+ * Les packages avec Status: install ok installed et sans Auto-Installed: 1 sont considérés comme manuels
+ * Si Auto-Installed n'existe pas, le package est considéré comme manuel par défaut
+ */
+function listManualPackagesFromStatus() {
+  try {
+    const statusPath = "/var/lib/dpkg/status";
+    if (!existsSync(statusPath)) {
+      logger.error("Fichier /var/lib/dpkg/status non trouvé");
+      return [];
+    }
+
+    const content = readFileSync(statusPath, "utf-8");
+
+    if (!content || typeof content !== "string") {
+      logger.error("Contenu de /var/lib/dpkg/status invalide ou vide");
+      return [];
+    }
+
+    logger.debug(
+      `Lecture de /var/lib/dpkg/status (${content.length} caractères)`
+    );
+
+    const packages = [];
+    let currentPackage = null;
+    let isInstalled = false;
+    let hasAutoInstalled = false; // Indique si le champ Auto-Installed existe
+    let isAutoInstalled = false;
+
+    for (const line of content.split("\n")) {
+      const cleaned = line.trim();
+      if (!cleaned) {
+        // Fin d'un bloc package
+        // Un package est manuel s'il est installé ET (pas de champ Auto-Installed OU Auto-Installed: 0)
+        if (currentPackage && isInstalled) {
+          if (!hasAutoInstalled || !isAutoInstalled) {
+            packages.push(currentPackage);
+          }
+        }
+        currentPackage = null;
+        isInstalled = false;
+        hasAutoInstalled = false;
+        isAutoInstalled = false;
+        continue;
+      }
+
+      if (cleaned.startsWith("Package:")) {
+        currentPackage = cleaned.replace("Package:", "").trim();
+      } else if (cleaned.startsWith("Status:")) {
+        isInstalled = cleaned.includes("install ok installed");
+      } else if (cleaned.startsWith("Auto-Installed:")) {
+        hasAutoInstalled = true;
+        isAutoInstalled = cleaned.includes("1");
+      }
+    }
+
+    // Dernier package
+    if (currentPackage && isInstalled) {
+      if (!hasAutoInstalled || !isAutoInstalled) {
+        packages.push(currentPackage);
+      }
+    }
+
+    logger.info(`Packages manuels trouvés depuis status: ${packages.length}`);
+    if (packages.length > 0) {
+      logger.debug(`Premiers packages: ${packages.slice(0, 10).join(", ")}`);
+    }
+
+    return packages.sort();
+  } catch (error) {
+    logger.error("Erreur lors de la lecture de /var/lib/dpkg/status", {
+      error: error.message,
+      stack: error.stack,
+    });
+    return [];
+  }
+}
+
+/**
  * Lit les packages installés manuellement depuis /var/lib/apt/extended_states
  * Ce fichier contient les packages marqués comme manuels (installés par l'utilisateur)
  */
-function listManualAptPackages() {
+export function listManualAptPackages() {
   try {
     const extendedStatesPath = "/var/lib/apt/extended_states";
     if (!existsSync(extendedStatesPath)) {
@@ -219,86 +302,8 @@ function listManualAptPackages() {
   }
 }
 
-/**
- * Fallback : lire les packages depuis /var/lib/dpkg/status
- * Les packages avec Status: install ok installed et sans Auto-Installed: 1 sont considérés comme manuels
- * Si Auto-Installed n'existe pas, le package est considéré comme manuel par défaut
- */
-function listManualPackagesFromStatus() {
-  try {
-    const statusPath = "/var/lib/dpkg/status";
-    if (!existsSync(statusPath)) {
-      logger.error("Fichier /var/lib/dpkg/status non trouvé");
-      return [];
-    }
 
-    const content = readFileSync(statusPath, "utf-8");
-
-    if (!content || typeof content !== "string") {
-      logger.error("Contenu de /var/lib/dpkg/status invalide ou vide");
-      return [];
-    }
-
-    logger.debug(
-      `Lecture de /var/lib/dpkg/status (${content.length} caractères)`
-    );
-
-    const packages = [];
-    let currentPackage = null;
-    let isInstalled = false;
-    let hasAutoInstalled = false; // Indique si le champ Auto-Installed existe
-    let isAutoInstalled = false;
-
-    for (const line of content.split("\n")) {
-      const cleaned = line.trim();
-      if (!cleaned) {
-        // Fin d'un bloc package
-        // Un package est manuel s'il est installé ET (pas de champ Auto-Installed OU Auto-Installed: 0)
-        if (currentPackage && isInstalled) {
-          if (!hasAutoInstalled || !isAutoInstalled) {
-            packages.push(currentPackage);
-          }
-        }
-        currentPackage = null;
-        isInstalled = false;
-        hasAutoInstalled = false;
-        isAutoInstalled = false;
-        continue;
-      }
-
-      if (cleaned.startsWith("Package:")) {
-        currentPackage = cleaned.replace("Package:", "").trim();
-      } else if (cleaned.startsWith("Status:")) {
-        isInstalled = cleaned.includes("install ok installed");
-      } else if (cleaned.startsWith("Auto-Installed:")) {
-        hasAutoInstalled = true;
-        isAutoInstalled = cleaned.includes("1");
-      }
-    }
-
-    // Dernier package
-    if (currentPackage && isInstalled) {
-      if (!hasAutoInstalled || !isAutoInstalled) {
-        packages.push(currentPackage);
-      }
-    }
-
-    logger.info(`Packages manuels trouvés depuis status: ${packages.length}`);
-    if (packages.length > 0) {
-      logger.debug(`Premiers packages: ${packages.slice(0, 10).join(", ")}`);
-    }
-
-    return packages.sort();
-  } catch (error) {
-    logger.error("Erreur lors de la lecture de /var/lib/dpkg/status", {
-      error: error.message,
-      stack: error.stack,
-    });
-    return [];
-  }
-}
-
-function formatSizeFromKb(sizeKb) {
+export function formatSizeFromKb(sizeKb) {
   const size = Number(sizeKb);
   if (Number.isNaN(size) || size <= 0) {
     return "0 KB";
@@ -313,7 +318,7 @@ function formatSizeFromKb(sizeKb) {
   return `${size} KB`;
 }
 
-function getInstallDate(pkgName) {
+export function getInstallDate(pkgName) {
   try {
     // Essayer plusieurs fichiers pour obtenir la date d'installation
     const possibleFiles = [
@@ -341,7 +346,7 @@ function getInstallDate(pkgName) {
  * Parse le fichier status et retourne un Map avec tous les détails des packages
  * Cette fonction optimise en lisant le fichier une seule fois
  */
-function parseAllPackageDetails() {
+export function parseAllPackageDetails() {
   try {
     const statusPath = "/var/lib/dpkg/status";
     if (!existsSync(statusPath)) {
@@ -418,7 +423,7 @@ function parseAllPackageDetails() {
   }
 }
 
-function listAptPackages() {
+export function listAptPackages() {
   const packages = listManualAptPackages();
   logger.info(`Packages utilisateur détectés (APT): ${packages.length}`);
 
@@ -455,19 +460,3 @@ function listAptPackages() {
   return details;
 }
 
-export async function listPackages(params = {}, callbacks = {}) {
-  validatePackagesParams("list", params);
-  console.log("Début de la récupération des packages installés");
-
-  const manager = detectPackageManager();
-  if (!SUPPORTED_MANAGERS.includes(manager)) {
-    throw new Error(`Gestionnaire de packages non supporté: ${manager}`);
-  }
-
-  switch (manager) {
-    case "apt":
-      return listAptPackages();
-    default:
-      throw new Error(`Gestionnaire de packages non supporté: ${manager}`);
-  }
-}

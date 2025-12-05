@@ -6,12 +6,12 @@
  * @module modules/ssh/index
  */
 
-import * as actionsModule from "./actions.js";
+import { listSshKeys } from "./actions/list.js";
 import * as validator from "./validator.js";
 
 // Mapping des noms d'actions vers les fonctions
 const actions = {
-  list: actionsModule.listSshKeys,
+  list: listSshKeys,
 };
 
 export { actions, validator };

@@ -1,22 +1,20 @@
 /**
- * Actions Metadata pour l'agent.
+ * Utilitaires pour les actions Metadata
  *
- * Ce module encapsule toutes les opérations autorisées pour récupérer
- * les métadonnées statiques du serveur.
+ * Fonctions partagées utilisées par les actions Metadata.
  *
- * @module modules/metadata/actions
+ * @module modules/metadata/actions/utils
  */
 
 import { readFileSync, existsSync } from "fs";
-import { logger } from "../../shared/logger.js";
-import { executeCommand } from "../../shared/executor.js";
-import { validateMetadataParams } from "./validator.js";
+import { logger } from "../../../shared/logger.js";
+import { executeCommand } from "../../../shared/executor.js";
 
 /**
  * Parse le fichier /etc/os-release pour récupérer les informations OS
  * @returns {Object} Informations OS (name, version, prettyName, id)
  */
-function parseOsRelease() {
+export function parseOsRelease() {
   try {
     const osReleasePath = "/etc/os-release";
 
@@ -76,7 +74,7 @@ function parseOsRelease() {
  * Récupère le hostname du serveur
  * @returns {Promise<string|null>} Hostname ou null en cas d'erreur
  */
-async function getHostname() {
+export async function getHostname() {
   try {
     // Essayer d'abord avec la commande hostname
     const { stdout } = await executeCommand("hostname", { timeout: 5000 });
@@ -103,7 +101,7 @@ async function getHostname() {
  * Récupère l'architecture du système
  * @returns {Promise<string|null>} Architecture ou null en cas d'erreur
  */
-async function getArchitecture() {
+export async function getArchitecture() {
   try {
     const { stdout } = await executeCommand("uname -m", { timeout: 5000 });
     if (stdout && stdout.trim()) {
@@ -122,7 +120,7 @@ async function getArchitecture() {
  * Parse /proc/cpuinfo pour récupérer les informations CPU
  * @returns {Object} Informations CPU (cores, model)
  */
-function getCpuInfo() {
+export function getCpuInfo() {
   try {
     if (!existsSync("/proc/cpuinfo")) {
       logger.error("Fichier /proc/cpuinfo non trouvé");
@@ -177,7 +175,7 @@ function getCpuInfo() {
  * Parse /proc/meminfo pour récupérer la RAM totale
  * @returns {Promise<number|null>} RAM totale en bytes ou null en cas d'erreur
  */
-async function getMemoryInfo() {
+export async function getMemoryInfo() {
   try {
     if (!existsSync("/proc/meminfo")) {
       logger.error("Fichier /proc/meminfo non trouvé");
@@ -214,7 +212,7 @@ async function getMemoryInfo() {
  * Récupère les informations de stockage via df
  * @returns {Promise<number|null>} Stockage total en bytes ou null en cas d'erreur
  */
-async function getDiskInfo() {
+export async function getDiskInfo() {
   try {
     const { stdout } = await executeCommand("df -B1 /", { timeout: 5000 });
     if (!stdout) {
@@ -249,7 +247,7 @@ async function getDiskInfo() {
  * Récupère l'IP principale du serveur
  * @returns {Promise<string|null>} IP principale ou null en cas d'erreur
  */
-async function getNetworkInfo() {
+export async function getNetworkInfo() {
   try {
     // Essayer d'abord avec hostname -I
     const { stdout } = await executeCommand("hostname -I | awk '{print $1}'", {
@@ -300,7 +298,7 @@ async function getNetworkInfo() {
  * Parse /etc/ssh/sshd_config pour récupérer le port SSH
  * @returns {Promise<number>} Port SSH (défaut: 22)
  */
-async function getSshPort() {
+export async function getSshPort() {
   try {
     const sshdConfigPath = "/etc/ssh/sshd_config";
     if (!existsSync(sshdConfigPath)) {
@@ -343,70 +341,5 @@ async function getSshPort() {
       error: error.message,
     });
     return 22;
-  }
-}
-
-/**
- * Récupère toutes les métadonnées statiques du serveur
- * @param {Object} params - Paramètres (non utilisés pour l'instant)
- * @param {Object} [callbacks] - Callbacks (non utilisés pour cette action)
- * @returns {Promise<Object>} Métadonnées du serveur
- */
-export async function getMetadata(params = {}, callbacks = {}) {
-  try {
-    validateMetadataParams("info", params);
-
-    logger.debug("Début de la récupération des métadonnées du serveur");
-
-    // Récupérer toutes les métadonnées en parallèle
-    const [
-      hostname,
-      osInfo,
-      architecture,
-      cpuInfo,
-      memoryTotal,
-      diskTotal,
-      networkIp,
-      sshPort,
-    ] = await Promise.all([
-      getHostname(),
-      Promise.resolve(parseOsRelease()),
-      getArchitecture(),
-      Promise.resolve(getCpuInfo()),
-      getMemoryInfo(),
-      getDiskInfo(),
-      getNetworkInfo(),
-      getSshPort(),
-    ]);
-
-    const metadata = {
-      hostname: hostname,
-      os: osInfo,
-      architecture: architecture,
-      cpu: cpuInfo,
-      memory: {
-        total: memoryTotal,
-      },
-      disk: {
-        total: diskTotal,
-      },
-      network: {
-        ip: networkIp,
-        sshPort: sshPort,
-      },
-    };
-
-    logger.info("Métadonnées du serveur récupérées avec succès", {
-      hostname,
-      architecture,
-      cpuCores: cpuInfo.cores,
-    });
-
-    return metadata;
-  } catch (error) {
-    logger.error("Erreur lors de la récupération des métadonnées", {
-      error: error.message,
-    });
-    throw error;
   }
 }
