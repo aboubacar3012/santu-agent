@@ -114,12 +114,117 @@ function parseSSHLogLine(line) {
 }
 
 /**
+ * Traite un événement Docker et l'envoie via le callback
+ */
+function processDockerEvent(event, callbacks) {
+  try {
+    const { Action, Type, Actor } = event;
+
+    if (Type === "container") {
+      let eventType, severity, title, description;
+      const containerName = Actor?.Attributes?.name || "unknown";
+      const image = Actor?.Attributes?.image || "unknown";
+
+      switch (Action) {
+        case "start":
+          eventType = "DOCKER_CONTAINER_STARTED";
+          severity = "MEDIUM";
+          title = "Container started";
+          description = `Container ${containerName} started`;
+          break;
+        case "stop":
+          eventType = "DOCKER_CONTAINER_STOPPED";
+          severity = "MEDIUM";
+          title = "Container stopped";
+          description = `Container ${containerName} stopped`;
+          break;
+        case "die":
+          eventType = "DOCKER_CONTAINER_ERROR";
+          severity = "HIGH";
+          title = "Container error";
+          description = `Container ${containerName} exited unexpectedly`;
+          break;
+        case "restart":
+          eventType = "DOCKER_CONTAINER_RESTARTED";
+          severity = "MEDIUM";
+          title = "Container restarted";
+          description = `Container ${containerName} restarted`;
+          break;
+        default:
+          return; // Ignorer les autres actions
+      }
+
+      const systemEvent = createSystemEvent(
+        eventType,
+        severity,
+        title,
+        description,
+        "docker",
+        {
+          container: containerName,
+          image,
+          action: Action,
+        }
+      );
+
+      callbacks.onStream("activity", JSON.stringify(systemEvent));
+    }
+  } catch (error) {
+    logger.debug("Erreur parsing événement Docker", {
+      error: error.message,
+    });
+  }
+}
+
+/**
  * Collecte les événements Docker en temps réel
  */
-function startDockerEventsCollector(callbacks, cleanupFunctions) {
+async function startDockerEventsCollector(callbacks, cleanupFunctions) {
   try {
     const docker = getDocker();
-    // Démarrer le stream depuis maintenant pour éviter les événements anciens
+
+    // D'abord, récupérer les événements des 3 derniers jours via journalctl
+    try {
+      const threeDaysAgo = Math.floor(
+        (Date.now() - 3 * 24 * 60 * 60 * 1000) / 1000
+      );
+
+      // Utiliser journalctl pour récupérer les événements Docker des 3 derniers jours
+      const command = `nsenter -t 1 -m -u -i -n -p -- journalctl -u docker.service --since "@${threeDaysAgo}" --until now --no-pager -o json 2>/dev/null || docker events --since ${threeDaysAgo} --until $(date +%s) --format '{{json .}}' 2>/dev/null || true`;
+
+      const { stdout } = await executeCommand(command, { timeout: 10000 });
+
+      if (stdout) {
+        const lines = stdout.split("\n").filter((line) => line.trim());
+        let historicalCount = 0;
+
+        for (const line of lines) {
+          try {
+            const event = JSON.parse(line);
+            // Vérifier si c'est un événement Docker valide
+            if (event.Type === "container" && event.Actor) {
+              processDockerEvent(event, callbacks);
+              historicalCount++;
+            }
+          } catch (error) {
+            // Ignorer les lignes qui ne sont pas du JSON valide
+          }
+        }
+
+        logger.debug("Événements Docker historiques récupérés", {
+          count: historicalCount,
+        });
+      }
+    } catch (error) {
+      logger.warn(
+        "Erreur lors de la récupération des événements Docker historiques",
+        {
+          error: error.message,
+        }
+      );
+    }
+
+    // Ensuite, démarrer le stream en temps réel depuis maintenant
     const dockerEvents = docker.getEvents({
       since: Math.floor(Date.now() / 1000), // Timestamp Unix en secondes
     });
@@ -127,57 +232,7 @@ function startDockerEventsCollector(callbacks, cleanupFunctions) {
     dockerEvents.on("data", (chunk) => {
       try {
         const event = JSON.parse(chunk.toString());
-        const { Action, Type, Actor } = event;
-
-        if (Type === "container") {
-          let eventType, severity, title, description;
-          const containerName = Actor?.Attributes?.name || "unknown";
-          const image = Actor?.Attributes?.image || "unknown";
-
-          switch (Action) {
-            case "start":
-              eventType = "DOCKER_CONTAINER_STARTED";
-              severity = "MEDIUM";
-              title = "Container started";
-              description = `Container ${containerName} started`;
-              break;
-            case "stop":
-              eventType = "DOCKER_CONTAINER_STOPPED";
-              severity = "MEDIUM";
-              title = "Container stopped";
-              description = `Container ${containerName} stopped`;
-              break;
-            case "die":
-              eventType = "DOCKER_CONTAINER_ERROR";
-              severity = "HIGH";
-              title = "Container error";
-              description = `Container ${containerName} exited unexpectedly`;
-              break;
-            case "restart":
-              eventType = "DOCKER_CONTAINER_RESTARTED";
-              severity = "MEDIUM";
-              title = "Container restarted";
-              description = `Container ${containerName} restarted`;
-              break;
-            default:
-              return; // Ignorer les autres actions
-          }
-
-          const systemEvent = createSystemEvent(
-            eventType,
-            severity,
-            title,
-            description,
-            "docker",
-            {
-              container: containerName,
-              image,
-              action: Action,
-            }
-          );
-
-          callbacks.onStream("activity", JSON.stringify(systemEvent));
-        }
+        processDockerEvent(event, callbacks);
       } catch (error) {
         logger.debug("Erreur parsing événement Docker", {
           error: error.message,
@@ -209,8 +264,82 @@ function startDockerEventsCollector(callbacks, cleanupFunctions) {
 /**
  * Collecte les événements SSH en temps réel
  */
-function startSSHEventsCollector(callbacks, cleanupFunctions) {
+async function startSSHEventsCollector(callbacks, cleanupFunctions) {
   try {
+    // D'abord, récupérer les logs SSH des 3 derniers jours
+    try {
+      const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+      const sinceDate = threeDaysAgo.toISOString().split("T")[0]; // Format YYYY-MM-DD
+
+      // Essayer journalctl d'abord (plus fiable)
+      const journalctlCommand = `nsenter -t 1 -m -u -i -n -p -- journalctl --since "${sinceDate}" --until now -u ssh -u sshd --no-pager 2>/dev/null || true`;
+
+      const { stdout } = await executeCommand(journalctlCommand, {
+        timeout: 10000,
+      });
+
+      if (stdout) {
+        const lines = stdout
+          .split("\n")
+          .filter((line) => line.trim() && line.toLowerCase().includes("ssh"));
+        let historicalCount = 0;
+
+        for (const line of lines) {
+          const event = parseSSHLogLine(line);
+          if (event) {
+            callbacks.onStream("activity", JSON.stringify(event));
+            historicalCount++;
+          }
+        }
+
+        logger.debug("Événements SSH historiques récupérés", {
+          count: historicalCount,
+        });
+      }
+
+      // Si journalctl n'a pas fonctionné, essayer les fichiers de logs directement
+      if (!stdout || stdout.trim().length === 0) {
+        const logFiles = [
+          "/var/log/auth.log",
+          "/var/log/secure",
+          "/var/log/syslog",
+          "/var/log/messages",
+        ];
+
+        for (const logFile of logFiles) {
+          try {
+            const grepCommand = `nsenter -t 1 -m -u -i -n -p -- grep -i ssh ${logFile} 2>/dev/null | tail -1000 || true`;
+            const { stdout: grepOutput } = await executeCommand(grepCommand, {
+              timeout: 5000,
+            });
+
+            if (grepOutput) {
+              const lines = grepOutput
+                .split("\n")
+                .filter((line) => line.trim());
+              for (const line of lines) {
+                const event = parseSSHLogLine(line);
+                if (event) {
+                  callbacks.onStream("activity", JSON.stringify(event));
+                }
+              }
+              break; // Utiliser le premier fichier qui fonctionne
+            }
+          } catch (error) {
+            // Continuer avec le fichier suivant
+          }
+        }
+      }
+    } catch (error) {
+      logger.warn(
+        "Erreur lors de la récupération des événements SSH historiques",
+        {
+          error: error.message,
+        }
+      );
+    }
+
+    // Ensuite, démarrer le streaming en temps réel
     // Déterminer le fichier de log SSH selon l'OS
     const logFiles = [
       "/var/log/auth.log", // Debian/Ubuntu
