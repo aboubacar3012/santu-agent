@@ -9,6 +9,40 @@ import { logger } from "../../../shared/logger.js";
 import { validateHaproxyParams } from "../validator.js";
 
 /**
+ * Parse une ligne de log HAProxy et vérifie si elle doit être filtrée
+ * @param {string} logLine - Ligne de log à parser
+ * @returns {boolean} True si le log doit être ignoré (status 101)
+ */
+function shouldIgnoreLog(logLine) {
+  try {
+    // Extraire le JSON du log (format: "Dec 05 14:44:01 haproxy[123]: { ... }")
+    const jsonMatch = logLine.match(/\{.*\}/);
+    if (!jsonMatch) {
+      return false; // Si pas de JSON, on ne filtre pas
+    }
+
+    const logData = JSON.parse(jsonMatch[0]);
+
+    // Vérifier si le status code est 101 (changement de protocole)
+    if (
+      logData &&
+      logData.response &&
+      logData.response.status === 101
+    ) {
+      return true; // Ignorer ce log
+    }
+
+    return false; // Ne pas ignorer
+  } catch (error) {
+    // En cas d'erreur de parsing, on ne filtre pas (on laisse passer)
+    logger.debug("Erreur lors du parsing d'un log pour filtrage", {
+      error: error.message,
+    });
+    return false;
+  }
+}
+
+/**
  * Récupère les logs HAProxy en temps réel via journalctl
  * @param {Object} params - Paramètres (non utilisés pour le moment)
  * @param {Object} callbacks - Callbacks pour le streaming
@@ -48,9 +82,9 @@ export async function getHaproxyLogs(params = {}, callbacks = {}) {
       // Garder la dernière ligne incomplète dans le buffer
       buffer = lines.pop() || "";
 
-      // Envoyer chaque ligne complète via le callback
+      // Envoyer chaque ligne complète via le callback (en filtrant les status 101)
       for (const line of lines) {
-        if (line.trim()) {
+        if (line.trim() && !shouldIgnoreLog(line)) {
           callbacks.onStream("stdout", line + "\n");
         }
       }
