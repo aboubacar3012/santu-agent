@@ -36,15 +36,10 @@ function createSystemEvent(
 /**
  * Parse une ligne de log SSH pour extraire les événements
  */
-function parseSSHLogLine(line, processedEvents) {
+function parseSSHLogLine(line) {
   if (!line || !line.trim()) return null;
 
   const lineLower = line.toLowerCase();
-  const eventId = `ssh-${line.trim().substring(0, 100)}`;
-
-  // Éviter les doublons
-  if (processedEvents.has(eventId)) return null;
-  processedEvents.add(eventId);
 
   // Connexion réussie
   if (
@@ -124,7 +119,10 @@ function parseSSHLogLine(line, processedEvents) {
 function startDockerEventsCollector(callbacks, cleanupFunctions) {
   try {
     const docker = getDocker();
-    const dockerEvents = docker.getEvents();
+    // Démarrer le stream depuis maintenant pour éviter les événements anciens
+    const dockerEvents = docker.getEvents({
+      since: Math.floor(Date.now() / 1000), // Timestamp Unix en secondes
+    });
 
     dockerEvents.on("data", (chunk) => {
       try {
@@ -211,7 +209,7 @@ function startDockerEventsCollector(callbacks, cleanupFunctions) {
 /**
  * Collecte les événements SSH en temps réel
  */
-function startSSHEventsCollector(callbacks, cleanupFunctions, processedEvents) {
+function startSSHEventsCollector(callbacks, cleanupFunctions) {
   try {
     // Déterminer le fichier de log SSH selon l'OS
     const logFiles = [
@@ -240,7 +238,7 @@ function startSSHEventsCollector(callbacks, cleanupFunctions, processedEvents) {
 
           for (const line of lines) {
             if (line.trim() && line.toLowerCase().includes("ssh")) {
-              const event = parseSSHLogLine(line, processedEvents);
+              const event = parseSSHLogLine(line);
               if (event) {
                 callbacks.onStream("activity", JSON.stringify(event));
               }
@@ -537,7 +535,6 @@ export async function streamActivity(params = {}, callbacks = {}) {
     logger.debug("Début du streaming des événements système", { sources });
 
     const cleanupFunctions = [];
-    const processedEvents = new Set();
 
     // Démarrer les collecteurs selon les sources demandées
     if (sources.includes("docker")) {
@@ -545,7 +542,7 @@ export async function streamActivity(params = {}, callbacks = {}) {
     }
 
     if (sources.includes("ssh")) {
-      startSSHEventsCollector(callbacks, cleanupFunctions, processedEvents);
+      startSSHEventsCollector(callbacks, cleanupFunctions);
     }
 
     if (sources.includes("system")) {
