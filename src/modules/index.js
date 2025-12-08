@@ -18,6 +18,7 @@ import * as metadataModule from "./metadata/index.js";
 import * as ufwModule from "./ufw/index.js";
 import * as haproxyModule from "./haproxy/index.js";
 import * as activityModule from "./activity/index.js";
+import * as metricsModule from "./metrics/index.js";
 import { logger } from "../shared/logger.js";
 
 /**
@@ -190,6 +191,22 @@ try {
   logger.info("Module Activity enregistré avec succès");
 } catch (error) {
   logger.error("Erreur lors de l'enregistrement du module Activity", {
+    error: error.message,
+    stack: error.stack,
+  });
+  throw error;
+}
+
+try {
+  logger.debug("Tentative d'enregistrement du module Metrics", {
+    metricsModule,
+    hasActions: !!metricsModule.actions,
+    hasValidator: !!metricsModule.validator,
+  });
+  registerModule("metrics", metricsModule);
+  logger.info("Module Metrics enregistré avec succès");
+} catch (error) {
+  logger.error("Erreur lors de l'enregistrement du module Metrics", {
     error: error.message,
     stack: error.stack,
   });
