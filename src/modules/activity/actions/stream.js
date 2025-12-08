@@ -183,18 +183,20 @@ async function startDockerEventsCollector(callbacks, cleanupFunctions) {
   try {
     const docker = getDocker();
 
-    // D'abord, récupérer les événements des 3 derniers jours via journalctl
+    // D'abord, récupérer les événements des 3 derniers jours88
     try {
       const threeDaysAgo = Math.floor(
         (Date.now() - 3 * 24 * 60 * 60 * 1000) / 1000
       );
+      const now = Math.floor(Date.now() / 1000);
 
-      // Utiliser journalctl pour récupérer les événements Docker des 3 derniers jours
-      const command = `nsenter -t 1 -m -u -i -n -p -- journalctl -u docker.service --since "@${threeDaysAgo}" --until now --no-pager -o json 2>/dev/null || docker events --since ${threeDaysAgo} --until $(date +%s) --format '{{json .}}' 2>/dev/null || true`;
+      // Utiliser docker events directement (plus fiable que journalctl)
+      // Note: docker events avec --until nécessite d'être exécuté dans un conteneur avec accès au socket Docker
+      const command = `nsenter -t 1 -m -u -i -n -p -- sh -c 'timeout 10 docker events --since ${threeDaysAgo} --until ${now} --format "{{json .}}" 2>/dev/null || true'`;
 
-      const { stdout } = await executeCommand(command, { timeout: 10000 });
+      const { stdout } = await executeCommand(command, { timeout: 15000 });
 
-      if (stdout) {
+      if (stdout && stdout.trim()) {
         const lines = stdout.split("\n").filter((line) => line.trim());
         let historicalCount = 0;
 
@@ -208,12 +210,17 @@ async function startDockerEventsCollector(callbacks, cleanupFunctions) {
             }
           } catch (error) {
             // Ignorer les lignes qui ne sont pas du JSON valide
+            logger.debug("Ligne non parsable Docker historique", {
+              line: line.substring(0, 100),
+            });
           }
         }
 
         logger.debug("Événements Docker historiques récupérés", {
           count: historicalCount,
         });
+      } else {
+        logger.debug("Aucun événement Docker historique trouvé");
       }
     } catch (error) {
       logger.warn(
@@ -270,35 +277,65 @@ async function startSSHEventsCollector(callbacks, cleanupFunctions) {
     try {
       const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
       const sinceDate = threeDaysAgo.toISOString().split("T")[0]; // Format YYYY-MM-DD
+      const sinceTimestamp = Math.floor(threeDaysAgo.getTime() / 1000);
 
-      // Essayer journalctl d'abord (plus fiable)
-      const journalctlCommand = `nsenter -t 1 -m -u -i -n -p -- journalctl --since "${sinceDate}" --until now -u ssh -u sshd --no-pager 2>/dev/null || true`;
+      let historicalCount = 0;
+      let foundLogs = false;
 
-      const { stdout } = await executeCommand(journalctlCommand, {
-        timeout: 10000,
-      });
+      // Essayer journalctl avec plusieurs formats
+      const journalctlCommands = [
+        // Format avec timestamp Unix
+        `nsenter -t 1 -m -u -i -n -p -- journalctl --since "@${sinceTimestamp}" --until now SYSLOG_IDENTIFIER=sshd --no-pager 2>/dev/null || true`,
+        // Format avec date
+        `nsenter -t 1 -m -u -i -n -p -- journalctl --since "${sinceDate}" --until now SYSLOG_IDENTIFIER=sshd --no-pager 2>/dev/null || true`,
+        // Format avec unit
+        `nsenter -t 1 -m -u -i -n -p -- journalctl --since "@${sinceTimestamp}" --until now -u sshd --no-pager 2>/dev/null || true`,
+        // Format générique avec grep
+        `nsenter -t 1 -m -u -i -n -p -- journalctl --since "@${sinceTimestamp}" --until now --no-pager | grep -i ssh 2>/dev/null || true`,
+      ];
 
-      if (stdout) {
-        const lines = stdout
-          .split("\n")
-          .filter((line) => line.trim() && line.toLowerCase().includes("ssh"));
-        let historicalCount = 0;
+      for (const journalctlCommand of journalctlCommands) {
+        try {
+          const { stdout } = await executeCommand(journalctlCommand, {
+            timeout: 10000,
+          });
 
-        for (const line of lines) {
-          const event = parseSSHLogLine(line);
-          if (event) {
-            callbacks.onStream("activity", JSON.stringify(event));
-            historicalCount++;
+          if (stdout && stdout.trim().length > 0) {
+            const lines = stdout
+              .split("\n")
+              .filter(
+                (line) => line.trim() && line.toLowerCase().includes("ssh")
+              );
+
+            for (const line of lines) {
+              const event = parseSSHLogLine(line);
+              if (event) {
+                callbacks.onStream("activity", JSON.stringify(event));
+                historicalCount++;
+              }
+            }
+
+            if (historicalCount > 0) {
+              foundLogs = true;
+              logger.debug(
+                "Événements SSH historiques récupérés via journalctl",
+                {
+                  count: historicalCount,
+                }
+              );
+              break; // Arrêter si on a trouvé des logs
+            }
           }
+        } catch (error) {
+          // Continuer avec la commande suivante
+          logger.debug("Tentative journalctl échouée", {
+            error: error.message,
+          });
         }
-
-        logger.debug("Événements SSH historiques récupérés", {
-          count: historicalCount,
-        });
       }
 
       // Si journalctl n'a pas fonctionné, essayer les fichiers de logs directement
-      if (!stdout || stdout.trim().length === 0) {
+      if (!foundLogs) {
         const logFiles = [
           "/var/log/auth.log",
           "/var/log/secure",
@@ -308,27 +345,47 @@ async function startSSHEventsCollector(callbacks, cleanupFunctions) {
 
         for (const logFile of logFiles) {
           try {
-            const grepCommand = `nsenter -t 1 -m -u -i -n -p -- grep -i ssh ${logFile} 2>/dev/null | tail -1000 || true`;
+            // Utiliser sed ou awk pour filtrer par date si possible, sinon prendre les dernières lignes
+            const grepCommand = `nsenter -t 1 -m -u -i -n -p -- sh -c 'grep -i ssh ${logFile} 2>/dev/null | tail -2000 || true'`;
             const { stdout: grepOutput } = await executeCommand(grepCommand, {
               timeout: 5000,
             });
 
-            if (grepOutput) {
+            if (grepOutput && grepOutput.trim().length > 0) {
               const lines = grepOutput
                 .split("\n")
                 .filter((line) => line.trim());
+
               for (const line of lines) {
                 const event = parseSSHLogLine(line);
                 if (event) {
                   callbacks.onStream("activity", JSON.stringify(event));
+                  historicalCount++;
                 }
               }
-              break; // Utiliser le premier fichier qui fonctionne
+
+              if (historicalCount > 0) {
+                logger.debug(
+                  "Événements SSH historiques récupérés via fichiers",
+                  {
+                    count: historicalCount,
+                    file: logFile,
+                  }
+                );
+                break; // Utiliser le premier fichier qui fonctionne
+              }
             }
           } catch (error) {
             // Continuer avec le fichier suivant
+            logger.debug(`Impossible de lire ${logFile}`, {
+              error: error.message,
+            });
           }
         }
+      }
+
+      if (historicalCount === 0) {
+        logger.debug("Aucun événement SSH historique trouvé");
       }
     } catch (error) {
       logger.warn(
