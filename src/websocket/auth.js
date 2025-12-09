@@ -1,41 +1,88 @@
+/**
+ * Module d'authentification pour les connexions WebSocket
+ *
+ * Ce module gère la vérification des tokens JWT envoyés par le frontend
+ * en appelant l'API de vérification du backend devoups.
+ *
+ * Flux d'authentification :
+ * 1. Le frontend génère un token JWT basé sur la session utilisateur (valide 2-3 minutes)
+ * 2. Le frontend envoie ce token dans l'URL WebSocket : wss://...?token=xxx&hostname=yyy
+ * 3. L'agent reçoit le token et appelle cette fonction pour le vérifier
+ * 4. Cette fonction fait un appel HTTP à l'API backend pour valider le token
+ * 5. L'API vérifie : signature JWT, expiration, existence de l'utilisateur
+ * 6. Si valide, la connexion WebSocket est acceptée, sinon elle est refusée
+ */
+
 import http from "http";
 import https from "https";
 import { logger } from "../shared/logger.js";
 
+// URL de l'API de vérification des tokens (backend devoups)
 const API_VERIFY_URL = "https://devoups.elyamaje.com/api/token";
-const VERIFY_TIMEOUT = 5000; // 5 secondes
+// Timeout pour l'appel API (5 secondes max pour éviter de bloquer les connexions)
+const VERIFY_TIMEOUT = 5000;
 
 /**
- * Vérifie un token JWT via l'API de vérification
+ * Vérifie un token JWT via l'API de vérification du backend
  *
- * @param {string} token - Token JWT à vérifier
+ * Cette fonction fait un appel HTTP GET à l'API backend pour vérifier :
+ * - La signature du token JWT (authenticité)
+ * - L'expiration du token (pas expiré)
+ * - L'existence de l'utilisateur dans la base de données
+ * - Le statut actif de l'utilisateur
+ *
+ * @param {string} token - Token JWT à vérifier (reçu dans l'URL WebSocket)
  * @returns {Promise<{valid: boolean, userId?: string, email?: string, error?: string}>}
+ *   - valid: true si le token est valide, false sinon
+ *   - userId: ID de l'utilisateur (si valide)
+ *   - email: Email de l'utilisateur (si valide)
+ *   - error: Message d'erreur (si invalide)
+ *
+ * @example
+ * const result = await verifyToken("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...");
+ * if (result.valid) {
+ *   console.log(`Utilisateur authentifié: ${result.email}`);
+ * } else {
+ *   console.error(`Erreur: ${result.error}`);
+ * }
  */
 export async function verifyToken(token) {
+  // Vérification basique : le token doit être fourni
   if (!token) {
     return { valid: false, error: "Token manquant" };
   }
 
+  // Construire l'URL de vérification avec le token en paramètre query
   const url = new URL(API_VERIFY_URL);
   url.searchParams.set("verify", token);
 
+  // Retourner une Promise pour gérer l'appel HTTP asynchrone
   return new Promise((resolve) => {
+    // Choisir le client HTTP approprié selon le protocole (https ou http)
     const client = url.protocol === "https:" ? https : http;
 
+    // Faire un appel GET à l'API de vérification
     const req = client.get(
       url.toString(),
       { timeout: VERIFY_TIMEOUT },
       (res) => {
+        // Buffer pour accumuler les données de la réponse
         let data = "";
 
+        // Accumuler les chunks de données reçus
         res.on("data", (chunk) => {
           data += chunk;
         });
 
+        // Quand toute la réponse est reçue, parser et vérifier
         res.on("end", () => {
           try {
+            // Parser la réponse JSON de l'API
             const result = JSON.parse(data);
+
+            // Vérifier que la réponse est un succès (200) et que le token est valide
             if (res.statusCode === 200 && result.valid === true) {
+              // Token valide : logger les infos utilisateur et retourner le succès
               logger.debug("Token vérifié avec succès", {
                 userId: result.userId,
                 email: result.email,
@@ -46,6 +93,11 @@ export async function verifyToken(token) {
                 email: result.email,
               });
             } else {
+              // Token invalide : logger l'erreur et retourner l'échec
+              // L'API peut retourner différents codes d'erreur :
+              // - 401 : Token expiré ou signature invalide
+              // - 404 : Utilisateur introuvable
+              // - 403 : Utilisateur inactif
               logger.warn("Token invalide selon l'API", {
                 error: result.error,
                 statusCode: res.statusCode,
@@ -56,6 +108,7 @@ export async function verifyToken(token) {
               });
             }
           } catch (error) {
+            // Erreur lors du parsing JSON : la réponse n'est pas valide
             logger.error("Erreur parsing réponse API", {
               error: error.message,
               data,
@@ -67,20 +120,25 @@ export async function verifyToken(token) {
       }
     );
 
+    // Gérer les erreurs réseau (connexion impossible, DNS, etc.)
     req.on("error", (error) => {
       logger.error("Erreur réseau lors de la vérification du token", {
         error: error.message,
         code: error.code,
       });
+      // En cas d'erreur réseau, on refuse la connexion par sécurité
       resolve({ valid: false, error: "Erreur réseau" });
     });
 
+    // Gérer le timeout : si l'API ne répond pas dans les 5 secondes
     req.on("timeout", () => {
-      req.destroy();
+      req.destroy(); // Détruire la requête pour libérer les ressources
       logger.warn("Timeout lors de la vérification du token");
+      // En cas de timeout, on refuse la connexion par sécurité
       resolve({ valid: false, error: "Timeout" });
     });
 
+    // Configurer le timeout sur la requête
     req.setTimeout(VERIFY_TIMEOUT);
   });
 }

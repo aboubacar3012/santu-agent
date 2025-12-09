@@ -40,12 +40,29 @@ export function createFrontendServer({
     handleHttpRequest(req, res, normalizedHealthcheckPath);
   });
 
+  /**
+   * Gestionnaire de connexion WebSocket
+   *
+   * Ce handler est appelé à chaque tentative de connexion WebSocket.
+   * Il effectue les vérifications de sécurité suivantes :
+   * 1. Validation de l'URL de connexion
+   * 2. Vérification du hostname (doit correspondre au hostname de l'agent)
+   * 3. Vérification du token JWT via l'API backend
+   *
+   * Si toutes les vérifications passent, la connexion est acceptée et
+   * le client peut commencer à envoyer des messages.
+   */
   wss.on("connection", async (ws, req) => {
     let connectionUrl;
 
+    // ============================================
+    // ÉTAPE 1 : Parser et valider l'URL de connexion
+    // ============================================
     try {
+      // Construire l'URL complète depuis l'URL relative et les headers
       connectionUrl = new URL(req.url || "/", `http://${req.headers.host}`);
     } catch (error) {
+      // URL malformée : refuser la connexion immédiatement
       logger.warn("URL de connexion WebSocket invalide", {
         error: error.message,
         remoteAddress: req.socket.remoteAddress,
@@ -54,11 +71,18 @@ export function createFrontendServer({
       return;
     }
 
+    // Extraire les paramètres de l'URL
+    // Le token JWT généré par le frontend (valide 2-3 minutes)
     const clientToken = connectionUrl.searchParams.get("token");
+    // Le hostname du serveur que le client veut gérer
     const requestedServerHostname =
       connectionUrl.searchParams.get("hostname") || null;
 
-    // Vérifier le hostname d'abord
+    // ============================================
+    // ÉTAPE 2 : Vérifier le hostname
+    // ============================================
+    // Le hostname doit correspondre exactement au hostname configuré de l'agent.
+    // Cela empêche un client de se connecter à un agent qui gère un autre serveur.
     if (!requestedServerHostname || requestedServerHostname !== hostname) {
       logger.warn(
         "Tentative de connexion sans hostname spécifié ou hostname incorrect",
@@ -72,11 +96,22 @@ export function createFrontendServer({
       return;
     }
 
-    // Vérifier le token via l'API si un token est fourni
+    // ============================================
+    // ÉTAPE 3 : Vérifier le token JWT via l'API
+    // ============================================
     if (clientToken) {
+      // Un token est fourni : le vérifier via l'API backend
+      // Cette vérification appelle https://devoups.elyamaje.com/api/token?verify=token
+      // L'API vérifie : signature JWT, expiration, existence utilisateur, statut actif
       const verificationResult = await verifyToken(clientToken);
 
       if (!verificationResult.valid) {
+        // Token invalide : refuser la connexion
+        // Raisons possibles :
+        // - Token expiré (plus de 2-3 minutes)
+        // - Signature invalide (token modifié ou secret incorrect)
+        // - Utilisateur introuvable ou inactif
+        // - Erreur réseau/timeout lors de la vérification
         logger.warn("Tentative de connexion avec un token invalide", {
           remoteAddress: req.socket.remoteAddress,
           requestedServerHostname,
@@ -86,13 +121,16 @@ export function createFrontendServer({
         return;
       }
 
+      // Token valide : logger les informations utilisateur pour traçabilité
       logger.info("Token vérifié avec succès", {
         remoteAddress: req.socket.remoteAddress,
         userId: verificationResult.userId,
         email: verificationResult.email,
       });
     } else if (token) {
-      // Fallback : si un token est configuré mais aucun token client n'est fourni
+      // Mode fallback : si un token statique est configuré dans l'environnement
+      // mais qu'aucun token client n'est fourni, refuser la connexion
+      // (ce mode est principalement pour le développement/test)
       logger.warn("Tentative de connexion sans token", {
         remoteAddress: req.socket.remoteAddress,
         requestedServerHostname,
@@ -100,7 +138,13 @@ export function createFrontendServer({
       ws.close(1008, "Token requis");
       return;
     }
+    // Si aucun token n'est fourni ET aucun token statique n'est configuré,
+    // on accepte la connexion (mode développement sans authentification)
 
+    // ============================================
+    // ÉTAPE 4 : Connexion acceptée - Initialisation
+    // ============================================
+    // Toutes les vérifications sont passées, la connexion est acceptée
     const remoteAddress = req.socket.remoteAddress;
 
     logger.info("Client frontend connecté", {
@@ -108,13 +152,32 @@ export function createFrontendServer({
       requestedServerHostname,
     });
 
+    // Map pour suivre les ressources actives (streams, processus, etc.)
+    // associées à cette connexion WebSocket
+    // Clé : requestId (identifiant unique de la requête)
+    // Valeur : ressource avec une méthode cleanup() pour libérer les ressources
     const activeResources = new Map();
 
+    /**
+     * Enregistre une ressource active associée à une requête
+     *
+     * Les ressources peuvent être :
+     * - Streams de logs (journalctl, docker logs)
+     * - Streams de métriques (collecte CPU, mémoire, etc.)
+     * - Processus en cours d'exécution
+     *
+     * Si une ressource existe déjà pour ce requestId, elle est nettoyée avant
+     * d'être remplacée (pour éviter les fuites de ressources).
+     *
+     * @param {string} requestId - Identifiant unique de la requête
+     * @param {Object|null} resource - Ressource avec méthode cleanup(), ou null pour supprimer
+     */
     const registerResource = (requestId, resource) => {
       if (!requestId) {
         return;
       }
 
+      // Si une ressource existe déjà pour ce requestId, la nettoyer d'abord
       const existing = activeResources.get(requestId);
       if (existing?.cleanup) {
         try {
@@ -127,6 +190,7 @@ export function createFrontendServer({
         }
       }
 
+      // Enregistrer la nouvelle ressource ou supprimer l'entrée si resource est null
       if (resource) {
         activeResources.set(requestId, resource);
       } else {
@@ -134,6 +198,17 @@ export function createFrontendServer({
       }
     };
 
+    /**
+     * Nettoie toutes les ressources actives lors de la fermeture de la connexion
+     *
+     * Cette fonction est appelée quand :
+     * - Le client ferme la connexion WebSocket
+     * - Une erreur survient sur la connexion
+     * - Le serveur est arrêté
+     *
+     * Elle garantit que toutes les ressources (processus, streams, etc.)
+     * sont correctement libérées pour éviter les fuites mémoire.
+     */
     const cleanupResources = () => {
       activeResources.forEach((resource, requestId) => {
         if (resource?.cleanup) {
@@ -153,12 +228,25 @@ export function createFrontendServer({
       activeResources.clear();
     };
 
+    /**
+     * Gestionnaire de messages WebSocket
+     *
+     * Ce handler traite tous les messages JSON reçus du frontend.
+     * Format attendu : { id: "req-123", action: "module.action", params: {...} }
+     *
+     * Le message est délégué à handleMessage() qui :
+     * - Valide l'action demandée
+     * - Exécute l'action correspondante (docker, haproxy, metrics, etc.)
+     * - Retourne une réponse ou démarre un stream
+     */
     ws.on("message", async (rawData) => {
       let message;
 
+      // Parser le message JSON
       try {
         message = JSON.parse(rawData.toString());
       } catch (error) {
+        // Message JSON invalide : retourner une erreur au client
         logger.warn("Payload JSON invalide reçu du frontend", {
           error: error.message,
           remoteAddress,
@@ -171,6 +259,8 @@ export function createFrontendServer({
         return;
       }
 
+      // Vérifier que le message contient un identifiant de requête
+      // L'ID permet de faire correspondre les réponses aux requêtes
       if (!message?.id) {
         logger.warn("Message reçu sans identifiant", {
           remoteAddress,
@@ -185,19 +275,23 @@ export function createFrontendServer({
         return;
       }
 
+      // Traiter le message via le handler principal
       try {
         await handleMessage(
           message,
+          // Callback pour envoyer une réponse au client
           (response) => {
             if (ws.readyState === ws.OPEN) {
               ws.send(JSON.stringify(response));
             }
           },
+          // Callback pour enregistrer une ressource active (stream, processus, etc.)
           (requestId, resource) => {
             registerResource(requestId, resource);
           }
         );
       } catch (error) {
+        // Erreur lors du traitement : logger et retourner une erreur au client
         logger.error("Erreur lors du traitement d'une requête frontend", {
           error: error.message,
           remoteAddress,
@@ -212,7 +306,14 @@ export function createFrontendServer({
       }
     });
 
+    /**
+     * Gestionnaire de fermeture de connexion
+     *
+     * Appelé quand le client ferme la connexion WebSocket ou quand
+     * le serveur ferme la connexion (timeout, erreur, etc.)
+     */
     ws.on("close", () => {
+      // Nettoyer toutes les ressources actives (streams, processus, etc.)
       cleanupResources();
       logger.info("Client frontend déconnecté", {
         remoteAddress,
@@ -220,12 +321,19 @@ export function createFrontendServer({
       });
     });
 
+    /**
+     * Gestionnaire d'erreurs WebSocket
+     *
+     * Appelé en cas d'erreur sur la connexion WebSocket
+     * (erreur réseau, protocole, etc.)
+     */
     ws.on("error", (error) => {
       logger.error("Erreur WebSocket côté frontend", {
         error: error.message,
         remoteAddress,
         requestedServerHostname,
       });
+      // Nettoyer les ressources même en cas d'erreur
       cleanupResources();
     });
   });
