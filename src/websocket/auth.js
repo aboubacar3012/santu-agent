@@ -50,12 +50,32 @@ const VERIFY_TIMEOUT = 5000;
 export async function verifyToken(token) {
   // Vérification basique : le token doit être fourni
   if (!token) {
+    logger.warn("Token manquant lors de la vérification");
     return { valid: false, error: "Token manquant" };
+  }
+
+  // Vérifier que le token est une chaîne non vide
+  if (typeof token !== "string" || token.trim().length === 0) {
+    logger.warn("Token invalide (vide ou non-string)", { tokenType: typeof token });
+    return { valid: false, error: "Token invalide" };
+  }
+
+  // Vérifier le format JWT basique (3 parties séparées par des points)
+  const tokenParts = token.split(".");
+  if (tokenParts.length !== 3) {
+    logger.warn("Token JWT malformé", { parts: tokenParts.length });
+    return { valid: false, error: "Token JWT malformé" };
   }
 
   // Construire l'URL de vérification avec le token en paramètre query
   const url = new URL(API_VERIFY_URL);
   url.searchParams.set("verify", token);
+  
+  logger.debug("Vérification du token", {
+    tokenLength: token.length,
+    tokenPreview: token.substring(0, 20) + "...",
+    url: url.toString().replace(/verify=[^&]+/, "verify=***"), // Masquer le token dans les logs
+  });
 
   // Retourner une Promise pour gérer l'appel HTTP asynchrone
   return new Promise((resolve) => {
@@ -71,11 +91,22 @@ export async function verifyToken(token) {
       // Choisir le client HTTP approprié selon le protocole (https ou http)
       const client = requestUrl.protocol === "https:" ? https : http;
 
+      // Options pour la requête HTTP avec les headers appropriés
+      const options = {
+        hostname: requestUrl.hostname,
+        port: requestUrl.port || (requestUrl.protocol === "https:" ? 443 : 80),
+        path: requestUrl.pathname + requestUrl.search,
+        method: "GET",
+        timeout: VERIFY_TIMEOUT,
+        headers: {
+          "User-Agent": "devoups-agent/1.0",
+          "Accept": "application/json",
+          "Accept-Encoding": "identity", // Pas de compression pour simplifier
+        },
+      };
+
       // Faire un appel GET à l'API de vérification
-      const req = client.get(
-        requestUrl.toString(),
-        { timeout: VERIFY_TIMEOUT },
-        (res) => {
+      const req = client.request(options, (res) => {
           // Gérer les redirections (301, 302, 307, 308) AVANT de lire le body
           if (
             res.statusCode >= 300 &&
@@ -213,6 +244,9 @@ export async function verifyToken(token) {
 
       // Configurer le timeout sur la requête
       req.setTimeout(VERIFY_TIMEOUT);
+
+      // Envoyer la requête (nécessaire avec client.request())
+      req.end();
     };
 
     // Démarrer la première requête
