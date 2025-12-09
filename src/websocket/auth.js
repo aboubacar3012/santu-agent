@@ -58,87 +58,163 @@ export async function verifyToken(token) {
 
   // Retourner une Promise pour gérer l'appel HTTP asynchrone
   return new Promise((resolve) => {
-    // Choisir le client HTTP approprié selon le protocole (https ou http)
-    const client = url.protocol === "https:" ? https : http;
+    // Fonction récursive pour suivre les redirections
+    const makeRequest = (requestUrl, redirectCount = 0) => {
+      // Limiter le nombre de redirections pour éviter les boucles infinies
+      if (redirectCount > 5) {
+        logger.error("Trop de redirections lors de la vérification du token");
+        resolve({ valid: false, error: "Trop de redirections" });
+        return;
+      }
 
-    // Faire un appel GET à l'API de vérification
-    const req = client.get(
-      url.toString(),
-      { timeout: VERIFY_TIMEOUT },
-      (res) => {
-        // Buffer pour accumuler les données de la réponse
-        let data = "";
+      // Choisir le client HTTP approprié selon le protocole (https ou http)
+      const client = requestUrl.protocol === "https:" ? https : http;
 
-        // Accumuler les chunks de données reçus
-        res.on("data", (chunk) => {
-          data += chunk;
-        });
+      // Faire un appel GET à l'API de vérification
+      const req = client.get(
+        requestUrl.toString(),
+        { timeout: VERIFY_TIMEOUT },
+        (res) => {
+          // Gérer les redirections (301, 302, 307, 308) AVANT de lire le body
+          if (
+            res.statusCode >= 300 &&
+            res.statusCode < 400 &&
+            res.headers.location
+          ) {
+            // Consommer le body de la redirection sans le parser (pour libérer la connexion)
+            res.on("data", () => {});
+            res.on("end", () => {
+              // Suivre la redirection après avoir consommé le body
+              try {
+                // Construire l'URL de redirection
+                // Si c'est une URL absolue, l'utiliser directement
+                // Sinon, la construire relativement à l'URL de base
+                let redirectUrl;
+                if (
+                  res.headers.location.startsWith("http://") ||
+                  res.headers.location.startsWith("https://")
+                ) {
+                  redirectUrl = new URL(res.headers.location);
+                } else {
+                  // URL relative : la construire à partir de l'URL de base
+                  redirectUrl = new URL(
+                    res.headers.location,
+                    `${requestUrl.protocol}//${requestUrl.host}`
+                  );
+                }
 
-        // Quand toute la réponse est reçue, parser et vérifier
-        res.on("end", () => {
-          try {
-            // Parser la réponse JSON de l'API
-            const result = JSON.parse(data);
+                // Préserver les paramètres de requête de l'URL originale
+                // (important pour préserver le paramètre ?verify=token)
+                if (requestUrl.search) {
+                  redirectUrl.search = requestUrl.search;
+                }
 
-            // Vérifier que la réponse est un succès (200) et que le token est valide
-            if (res.statusCode === 200 && result.valid === true) {
-              // Token valide : logger les infos utilisateur et retourner le succès
-              logger.debug("Token vérifié avec succès", {
-                userId: result.userId,
-                email: result.email,
-              });
-              resolve({
-                valid: true,
-                userId: result.userId,
-                email: result.email,
-              });
-            } else {
-              // Token invalide : logger l'erreur et retourner l'échec
-              // L'API peut retourner différents codes d'erreur :
-              // - 401 : Token expiré ou signature invalide
-              // - 404 : Utilisateur introuvable
-              // - 403 : Utilisateur inactif
-              logger.warn("Token invalide selon l'API", {
-                error: result.error,
+                logger.debug("Redirection suivie", {
+                  from: requestUrl.toString(),
+                  to: redirectUrl.toString(),
+                  statusCode: res.statusCode,
+                  locationHeader: res.headers.location,
+                });
+                // Réessayer avec la nouvelle URL
+                makeRequest(redirectUrl, redirectCount + 1);
+              } catch (error) {
+                logger.error("Erreur lors du suivi de la redirection", {
+                  error: error.message,
+                  location: res.headers.location,
+                  currentUrl: requestUrl.toString(),
+                });
+                resolve({ valid: false, error: "Erreur redirection" });
+              }
+            });
+            return;
+          }
+
+          // Buffer pour accumuler les données de la réponse (seulement si ce n'est pas une redirection)
+          let data = "";
+
+          // Accumuler les chunks de données reçus
+          res.on("data", (chunk) => {
+            data += chunk;
+          });
+
+          // Quand toute la réponse est reçue, parser et vérifier
+          res.on("end", () => {
+            // Vérifier que la réponse n'est pas vide
+            if (!data || data.trim().length === 0) {
+              logger.error("Réponse API vide", {
                 statusCode: res.statusCode,
               });
-              resolve({
-                valid: false,
-                error: result.error || "Token invalide",
-              });
+              resolve({ valid: false, error: "Réponse API vide" });
+              return;
             }
-          } catch (error) {
-            // Erreur lors du parsing JSON : la réponse n'est pas valide
-            logger.error("Erreur parsing réponse API", {
-              error: error.message,
-              data,
-              statusCode: res.statusCode,
-            });
-            resolve({ valid: false, error: "Erreur parsing réponse" });
-          }
+
+            try {
+              // Parser la réponse JSON de l'API
+              const result = JSON.parse(data);
+
+              // Vérifier que la réponse est un succès (200) et que le token est valide
+              if (res.statusCode === 200 && result.valid === true) {
+                // Token valide : logger les infos utilisateur et retourner le succès
+                logger.debug("Token vérifié avec succès", {
+                  userId: result.userId,
+                  email: result.email,
+                });
+                resolve({
+                  valid: true,
+                  userId: result.userId,
+                  email: result.email,
+                });
+              } else {
+                // Token invalide : logger l'erreur et retourner l'échec
+                // L'API peut retourner différents codes d'erreur :
+                // - 401 : Token expiré ou signature invalide
+                // - 404 : Utilisateur introuvable
+                // - 403 : Utilisateur inactif
+                logger.warn("Token invalide selon l'API", {
+                  error: result.error,
+                  statusCode: res.statusCode,
+                });
+                resolve({
+                  valid: false,
+                  error: result.error || "Token invalide",
+                });
+              }
+            } catch (error) {
+              // Erreur lors du parsing JSON : la réponse n'est pas valide
+              logger.error("Erreur parsing réponse API", {
+                error: error.message,
+                data: data.substring(0, 200), // Logger seulement les 200 premiers caractères
+                statusCode: res.statusCode,
+              });
+              resolve({ valid: false, error: "Erreur parsing réponse" });
+            }
+          });
+        }
+      );
+
+      // Gérer les erreurs réseau (connexion impossible, DNS, etc.)
+      req.on("error", (error) => {
+        logger.error("Erreur réseau lors de la vérification du token", {
+          error: error.message,
+          code: error.code,
         });
-      }
-    );
-
-    // Gérer les erreurs réseau (connexion impossible, DNS, etc.)
-    req.on("error", (error) => {
-      logger.error("Erreur réseau lors de la vérification du token", {
-        error: error.message,
-        code: error.code,
+        // En cas d'erreur réseau, on refuse la connexion par sécurité
+        resolve({ valid: false, error: "Erreur réseau" });
       });
-      // En cas d'erreur réseau, on refuse la connexion par sécurité
-      resolve({ valid: false, error: "Erreur réseau" });
-    });
 
-    // Gérer le timeout : si l'API ne répond pas dans les 5 secondes
-    req.on("timeout", () => {
-      req.destroy(); // Détruire la requête pour libérer les ressources
-      logger.warn("Timeout lors de la vérification du token");
-      // En cas de timeout, on refuse la connexion par sécurité
-      resolve({ valid: false, error: "Timeout" });
-    });
+      // Gérer le timeout : si l'API ne répond pas dans les 5 secondes
+      req.on("timeout", () => {
+        req.destroy(); // Détruire la requête pour libérer les ressources
+        logger.warn("Timeout lors de la vérification du token");
+        // En cas de timeout, on refuse la connexion par sécurité
+        resolve({ valid: false, error: "Timeout" });
+      });
 
-    // Configurer le timeout sur la requête
-    req.setTimeout(VERIFY_TIMEOUT);
+      // Configurer le timeout sur la requête
+      req.setTimeout(VERIFY_TIMEOUT);
+    };
+
+    // Démarrer la première requête
+    makeRequest(url);
   });
 }
