@@ -3,7 +3,7 @@ import { WebSocketServer } from "ws";
 import { logger } from "../shared/logger.js";
 import { handleMessage } from "./handlers.js";
 import { createError } from "../shared/messages.js";
-
+import { verifyToken } from "./auth.js";
 
 const DEFAULT_HEALTHCHECK_PATH = "/healthcheck";
 
@@ -40,7 +40,7 @@ export function createFrontendServer({
     handleHttpRequest(req, res, normalizedHealthcheckPath);
   });
 
-  wss.on("connection", (ws, req) => {
+  wss.on("connection", async (ws, req) => {
     let connectionUrl;
 
     try {
@@ -58,20 +58,46 @@ export function createFrontendServer({
     const requestedServerHostname =
       connectionUrl.searchParams.get("hostname") || null;
 
-    if (token && clientToken !== token) {
-      logger.warn("Tentative de connexion avec un token invalide ", {
-        remoteAddress: req.socket.remoteAddress,
-        requestedServerHostname,
-      });
-      ws.close(1008, "Invalid token");
+    // Vérifier le hostname d'abord
+    if (!requestedServerHostname || requestedServerHostname !== hostname) {
+      logger.warn(
+        "Tentative de connexion sans hostname spécifié ou hostname incorrect",
+        {
+          remoteAddress: req.socket.remoteAddress,
+          requestedHostname: requestedServerHostname,
+          expectedHostname: hostname,
+        }
+      );
+      ws.close(1008, "Hostname requis");
       return;
     }
 
-    if (!requestedServerHostname || requestedServerHostname !== hostname) {
-      logger.warn("Tentative de connexion sans hostname spécifié", {
+    // Vérifier le token via l'API si un token est fourni
+    if (clientToken) {
+      const verificationResult = await verifyToken(clientToken);
+
+      if (!verificationResult.valid) {
+        logger.warn("Tentative de connexion avec un token invalide", {
+          remoteAddress: req.socket.remoteAddress,
+          requestedServerHostname,
+          error: verificationResult.error,
+        });
+        ws.close(1008, verificationResult.error || "Invalid token");
+        return;
+      }
+
+      logger.info("Token vérifié avec succès", {
         remoteAddress: req.socket.remoteAddress,
+        userId: verificationResult.userId,
+        email: verificationResult.email,
       });
-      ws.close(1008, "Hostname requis");
+    } else if (token) {
+      // Fallback : si un token est configuré mais aucun token client n'est fourni
+      logger.warn("Tentative de connexion sans token", {
+        remoteAddress: req.socket.remoteAddress,
+        requestedServerHostname,
+      });
+      ws.close(1008, "Token requis");
       return;
     }
 
