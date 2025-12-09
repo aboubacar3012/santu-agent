@@ -18,7 +18,8 @@ import https from "https";
 import { logger } from "../shared/logger.js";
 
 // URL de l'API de vérification des tokens (backend devoups)
-const API_VERIFY_URL = "https://devoups.elyamaje.com/api/token";
+// Utiliser le slash final pour éviter la redirection 308 de Next.js
+const API_VERIFY_URL = "https://devoups.elyamaje.com/api/token/";
 // Timeout pour l'appel API (5 secondes max pour éviter de bloquer les connexions)
 const VERIFY_TIMEOUT = 5000;
 
