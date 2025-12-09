@@ -171,12 +171,42 @@ export async function verifyToken(token) {
 
           // Quand toute la réponse est reçue, parser et vérifier
           res.on("end", () => {
+            // Vérifier d'abord le code de statut HTTP
+            // Codes 5xx : erreurs serveur (maintenance, erreur interne, etc.)
+            if (res.statusCode >= 500) {
+              logger.error("Erreur serveur lors de la vérification du token", {
+                statusCode: res.statusCode,
+                contentType: res.headers["content-type"],
+                dataPreview: data.substring(0, 200),
+              });
+              resolve({
+                valid: false,
+                error: `Service indisponible (${res.statusCode})`,
+              });
+              return;
+            }
+
             // Vérifier que la réponse n'est pas vide
             if (!data || data.trim().length === 0) {
               logger.error("Réponse API vide", {
                 statusCode: res.statusCode,
               });
               resolve({ valid: false, error: "Réponse API vide" });
+              return;
+            }
+
+            // Vérifier le Content-Type avant de parser en JSON
+            const contentType = res.headers["content-type"] || "";
+            if (!contentType.includes("application/json")) {
+              logger.error("Réponse API n'est pas du JSON", {
+                statusCode: res.statusCode,
+                contentType,
+                dataPreview: data.substring(0, 200),
+              });
+              resolve({
+                valid: false,
+                error: `Réponse API invalide (${res.statusCode})`,
+              });
               return;
             }
 
@@ -217,6 +247,7 @@ export async function verifyToken(token) {
                 error: error.message,
                 data: data.substring(0, 200), // Logger seulement les 200 premiers caractères
                 statusCode: res.statusCode,
+                contentType: res.headers["content-type"],
               });
               resolve({ valid: false, error: "Erreur parsing réponse" });
             }
