@@ -34,16 +34,27 @@ function safeFloat(value) {
 
 /**
  * Obtient les métriques CPU
+ * Calcule le pourcentage d'utilisation sur tous les CPUs (peut dépasser 100% si plusieurs cores)
  */
 async function getCPUMetrics() {
   try {
+    // Obtenir le nombre de cores d'abord
+    const { stdout: cpuCountOutput } = await executeCommand(
+      "nsenter -t 1 -m -u -i -n -p -- nproc",
+      { timeout: 5000 }
+    );
+    const cpuCores = cpuCountOutput
+      ? parseInt(cpuCountOutput.trim(), 10)
+      : null;
+
+    // Lire la ligne "cpu" qui représente la somme de tous les CPUs
     const { stdout: statOutput } = await executeCommand(
       "nsenter -t 1 -m -u -i -n -p -- cat /proc/stat | head -1",
       { timeout: 5000 }
     );
 
     if (!statOutput) {
-      return { usage: 0, cores: null };
+      return { usage: 0, cores: cpuCores };
     }
 
     const parts = statOutput.trim().split(/\s+/);
@@ -61,7 +72,7 @@ async function getCPUMetrics() {
     if (!getCPUMetrics.lastTotals) {
       getCPUMetrics.lastTotals = { total, idle };
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      return { usage: 0, cores: null };
+      return { usage: 0, cores: cpuCores };
     }
 
     const totalDiff = total - getCPUMetrics.lastTotals.total;
@@ -71,17 +82,13 @@ async function getCPUMetrics() {
 
     let cpuUsage = 0;
     if (totalDiff > 0) {
-      cpuUsage = ((totalDiff - idleDiff) / totalDiff) * 100;
+      // Calculer le pourcentage moyen par CPU (0-100%)
+      const avgUsage = ((totalDiff - idleDiff) / totalDiff) * 100;
+      // Multiplier par le nombre de cores pour obtenir le pourcentage total sur tous les CPUs
+      // Exemple: 4 CPUs à 50% chacun = 200% total
+      cpuUsage = cpuCores ? avgUsage * cpuCores : avgUsage;
       cpuUsage = Math.round(cpuUsage * 100) / 100;
     }
-
-    const { stdout: cpuCountOutput } = await executeCommand(
-      "nsenter -t 1 -m -u -i -n -p -- nproc",
-      { timeout: 5000 }
-    );
-    const cpuCores = cpuCountOutput
-      ? parseInt(cpuCountOutput.trim(), 10)
-      : null;
 
     return {
       usage: cpuUsage,
