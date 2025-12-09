@@ -23,7 +23,55 @@ const currentLogLevel =
   LOG_LEVELS[process.env.AGENT_LOG_LEVEL || "debug"] || LOG_LEVELS.debug;
 
 /**
- * Formate un message de log
+ * Codes de couleur ANSI pour les terminaux
+ */
+const COLORS = {
+  reset: "\x1b[0m",
+  bright: "\x1b[1m",
+  dim: "\x1b[2m",
+  red: "\x1b[31m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m",
+  blue: "\x1b[34m",
+  magenta: "\x1b[35m",
+  cyan: "\x1b[36m",
+  gray: "\x1b[90m",
+  // Couleurs de ligne (2 couleurs pour alterner)
+  line1: "\x1b[38;5;245m", // Gris moyen
+  line2: "\x1b[38;5;250m", // Gris clair
+};
+
+/**
+ * Couleurs par niveau de log
+ */
+const LEVEL_COLORS = {
+  error: COLORS.red,
+  warn: COLORS.yellow,
+  info: COLORS.cyan,
+  debug: COLORS.gray,
+};
+
+/**
+ * Vérifie si le terminal supporte les couleurs ANSI
+ */
+const supportsColor =
+  process.stdout.isTTY && !process.env.NO_COLOR && process.env.TERM !== "dumb";
+
+/**
+ * Compteur pour alterner les couleurs de ligne
+ */
+let lineColorCounter = 0;
+
+/**
+ * Obtient une couleur de ligne (alterne entre 2 couleurs)
+ */
+function getLineColor() {
+  lineColorCounter++;
+  return lineColorCounter % 2 === 0 ? COLORS.line1 : COLORS.line2;
+}
+
+/**
+ * Formate un message de log avec couleurs
  * @param {string} level - Niveau de log
  * @param {string} message - Message
  * @param {Object} [meta] - Métadonnées additionnelles
@@ -32,7 +80,21 @@ const currentLogLevel =
 function formatLog(level, message, meta = {}) {
   const timestamp = new Date().toISOString();
   const metaStr = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : "";
-  return `[${timestamp}] [${level.toUpperCase()}] ${message}${metaStr}`;
+  
+  const levelColor = supportsColor ? LEVEL_COLORS[level] || "" : "";
+  const resetColor = supportsColor ? COLORS.reset : "";
+  const timestampColor = supportsColor ? COLORS.dim : "";
+  const lineColor = supportsColor ? getLineColor() : "";
+
+  const coloredLevel = `${levelColor}[${level.toUpperCase()}]${resetColor}`;
+  const coloredTimestamp = `${timestampColor}[${timestamp}]${resetColor}`;
+
+  // Appliquer la couleur de ligne à toute la ligne
+  const fullMessage = `${coloredTimestamp} ${coloredLevel} ${message}${metaStr}`;
+
+  return supportsColor
+    ? `${lineColor}${fullMessage}${resetColor}`
+    : fullMessage;
 }
 
 /**
