@@ -27,6 +27,7 @@ export function createFrontendServer({
   host,
   token,
   hostname,
+  serverIp,
   healthcheckPath = DEFAULT_HEALTHCHECK_PATH,
 }) {
   const normalizedHealthcheckPath = normalizeHealthcheckPath(healthcheckPath);
@@ -47,7 +48,7 @@ export function createFrontendServer({
    * Il effectue les vérifications de sécurité suivantes :
    * 1. Validation de l'URL de connexion
    * 2. Vérification du hostname (doit correspondre au hostname de l'agent)
-   * 3. Vérification du token JWT via l'API backend
+   * 3. Vérification du token (décodage local)
    *
    * Si toutes les vérifications passent, la connexion est acceptée et
    * le client peut commencer à envoyer des messages.
@@ -72,7 +73,7 @@ export function createFrontendServer({
     }
 
     // Extraire les paramètres de l'URL
-    // Le token JWT généré par le frontend (valide 2-3 minutes)
+    // Le token généré par le frontend (valide ~5 minutes)
     const clientToken = connectionUrl.searchParams.get("token");
     // Le hostname du serveur que le client veut gérer
     const requestedServerHostname =
@@ -97,47 +98,59 @@ export function createFrontendServer({
     }
 
     // ============================================
-    // ÉTAPE 3 : Vérifier le token JWT via l'API
+    // ÉTAPE 3 : Vérifier le token localement
     // ============================================
-    // if (clientToken) {
-    //   // Un token est fourni : le vérifier via l'API backend
-    //   // Cette vérification appelle https://devoups.elyamaje.com/api/token?verify=token
-    //   // L'API vérifie : signature JWT, expiration, existence utilisateur, statut actif
-    //   const verificationResult = await verifyToken(clientToken);
+    if (clientToken) {
+      // Un token est fourni : le vérifier localement sans appel API
+      // Cette vérification décode le token et vérifie :
+      // - Expiration du token (pas expiré, valide 5 minutes)
+      // - Correspondance du hostname avec celui de l'agent
+      // - Correspondance de l'IP avec celle du serveur
+      if (!serverIp) {
+        logger.error(
+          "IP du serveur non disponible, impossible de vérifier le token",
+          {
+            remoteAddress: req.socket.remoteAddress,
+            requestedServerHostname,
+          }
+        );
+        ws.close(1008, "Configuration serveur invalide");
+        return;
+      }
 
-    //   if (!verificationResult.valid) {
-    //     // Token invalide : refuser la connexion
-    //     // Raisons possibles :
-    //     // - Token expiré (plus de 2-3 minutes)
-    //     // - Signature invalide (token modifié ou secret incorrect)
-    //     // - Utilisateur introuvable ou inactif
-    //     // - Erreur réseau/timeout lors de la vérification
-    //     logger.warn("Tentative de connexion avec un token invalide", {
-    //       remoteAddress: req.socket.remoteAddress,
-    //       requestedServerHostname,
-    //       error: verificationResult.error,
-    //     });
-    //     ws.close(1008, verificationResult.error || "Invalid token");
-    //     return;
-    //   }
+      const verificationResult = verifyToken(clientToken, hostname, serverIp);
 
-    //   // Token valide : logger les informations utilisateur pour traçabilité
-    //   logger.info("Token vérifié avec succès", {
-    //     remoteAddress: req.socket.remoteAddress,
-    //     userId: verificationResult.userId,
-    //     email: verificationResult.email,
-    //   });
-    // } else if (token) {
-    //   // Mode fallback : si un token statique est configuré dans l'environnement
-    //   // mais qu'aucun token client n'est fourni, refuser la connexion
-    //   // (ce mode est principalement pour le développement/test)
-    //   logger.warn("Tentative de connexion sans token", {
-    //     remoteAddress: req.socket.remoteAddress,
-    //     requestedServerHostname,
-    //   });
-    //   ws.close(1008, "Token requis");
-    //   return;
-    // }
+      if (!verificationResult.valid) {
+        // Token invalide : refuser la connexion
+        // Raisons possibles :
+        // - Token expiré (plus de 5 minutes)
+        // - Signature invalide (token modifié ou secret incorrect)
+        // - Hostname ou IP ne correspondent pas
+        logger.warn("Tentative de connexion avec un token invalide", {
+          remoteAddress: req.socket.remoteAddress,
+          requestedServerHostname,
+          error: verificationResult.error,
+        });
+        ws.close(1008, verificationResult.error || "Invalid token");
+        return;
+      }
+
+      // Token valide : logger les informations pour traçabilité
+      logger.info("Token vérifié avec succès localement", {
+        remoteAddress: req.socket.remoteAddress,
+        requestedServerHostname,
+      });
+    } else if (token) {
+      // Mode fallback : si un token statique est configuré dans l'environnement
+      // mais qu'aucun token client n'est fourni, refuser la connexion
+      // (ce mode est principalement pour le développement/test)
+      logger.warn("Tentative de connexion sans token", {
+        remoteAddress: req.socket.remoteAddress,
+        requestedServerHostname,
+      });
+      ws.close(1008, "Token requis");
+      return;
+    }
     // Si aucun token n'est fourni ET aucun token statique n'est configuré,
     // on accepte la connexion (mode développement sans authentification)
 

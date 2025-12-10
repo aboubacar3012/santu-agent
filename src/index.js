@@ -14,6 +14,7 @@ import { loadConfig } from "./config/env.js";
 import { logger } from "./shared/logger.js";
 import { createFrontendServer } from "./websocket/server.js";
 import { initDocker } from "./modules/docker/manager.js";
+import { getNetworkInfo } from "./modules/metadata/actions/utils.js";
 
 /**
  * Fonction principale orchestrant le cycle de vie de l'agent.
@@ -22,19 +23,28 @@ async function main() {
   try {
     // 1. Charger la configuration validée.
     const config = loadConfig();
+    
+    // 2. Récupérer l'IP du serveur pour la vérification des tokens
+    const serverIp = await getNetworkInfo();
+    if (!serverIp) {
+      logger.warn("Impossible de récupérer l'IP du serveur, la vérification des tokens pourrait échouer");
+    }
+
     logger.info("Démarrage de l'agent ", {
       hostname: config.hostname,
+      serverIp: serverIp || "non disponible",
     });
 
-    // 2. Initialiser Docker une fois pour toutes (lazy singleton).
+    // 3. Initialiser Docker une fois pour toutes (lazy singleton).
     initDocker(config.dockerSocketPath);
 
-    // 3. Démarrer le serveur WebSocket pour les connexions frontend.
+    // 4. Démarrer le serveur WebSocket pour les connexions frontend.
     const frontendServer = createFrontendServer({
       port: config.frontendPort,
       host: config.frontendHost,
       token: config.clientToken,
       hostname: config.hostname,
+      serverIp: serverIp || null,
       healthcheckPath: config.healthcheckPath,
     });
 
