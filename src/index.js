@@ -15,6 +15,8 @@ import { logger } from "./shared/logger.js";
 import { createFrontendServer } from "./websocket/server.js";
 import { initDocker } from "./modules/docker/manager.js";
 import { getNetworkInfo } from "./modules/metadata/actions/utils.js";
+import { closeRedisConnection } from "./shared/redis.js";
+import { startLogCollector, stopLogCollector } from "./modules/haproxy/logCollector.js";
 
 /**
  * Fonction principale orchestrant le cycle de vie de l'agent.
@@ -38,7 +40,17 @@ async function main() {
     // 3. Initialiser Docker une fois pour toutes (lazy singleton).
     initDocker(config.dockerSocketPath);
 
-    // 4. Démarrer le serveur WebSocket pour les connexions frontend.
+    // 4. Démarrer le collecteur de logs HAProxy en arrière-plan
+    try {
+      await startLogCollector();
+    } catch (error) {
+      logger.warn("Impossible de démarrer le collecteur de logs HAProxy", {
+        error: error.message,
+      });
+      // Continuer même si le collecteur ne démarre pas
+    }
+
+    // 5. Démarrer le serveur WebSocket pour les connexions frontend.
     const frontendServer = createFrontendServer({
       port: config.frontendPort,
       host: config.frontendHost,
@@ -58,10 +70,28 @@ async function main() {
 
       logger.info(`Signal ${signal} reçu, arrêt en cours...`);
 
+      // Arrêter le collecteur de logs HAProxy
+      try {
+        await stopLogCollector();
+      } catch (error) {
+        logger.error("Erreur lors de l'arrêt du collecteur de logs", {
+          error: error.message,
+        });
+      }
+
       try {
         await frontendServer.close();
       } catch (error) {
         logger.error("Erreur lors de la fermeture du serveur frontend", {
+          error: error.message,
+        });
+      }
+
+      // Fermer la connexion Redis proprement
+      try {
+        await closeRedisConnection();
+      } catch (error) {
+        logger.error("Erreur lors de la fermeture de Redis", {
           error: error.message,
         });
       }

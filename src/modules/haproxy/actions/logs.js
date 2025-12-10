@@ -7,6 +7,11 @@
 import { spawn } from "child_process";
 import { logger } from "../../../shared/logger.js";
 import { validateHaproxyParams } from "../validator.js";
+import {
+  storeLog,
+  getCachedLogsLast24h,
+  generateLogKey,
+} from "../../../shared/redis.js";
 
 /**
  * Parse une ligne de log HAProxy et vérifie si elle doit être filtrée
@@ -24,11 +29,7 @@ function shouldIgnoreLog(logLine) {
     const logData = JSON.parse(jsonMatch[0]);
 
     // Vérifier si le status code est 101 (changement de protocole)
-    if (
-      logData &&
-      logData.response &&
-      logData.response.status === 101
-    ) {
+    if (logData && logData.response && logData.response.status === 101) {
       return true; // Ignorer ce log
     }
 
@@ -62,6 +63,45 @@ export async function getHaproxyLogs(params = {}, callbacks = {}) {
 
     logger.debug("Début du streaming des logs HAProxy en temps réel");
 
+    // Clé Redis pour les logs d'aujourd'hui
+    const logKey = generateLogKey("haproxy:logs");
+
+    // ÉTAPE 1 : Récupérer et envoyer les logs en cache des dernières 24h avant de commencer le streaming
+    try {
+      const cachedLogs = await getCachedLogsLast24h("haproxy:logs", 1000);
+      if (cachedLogs.length > 0) {
+        logger.debug(`Envoi de ${cachedLogs.length} logs en cache (24h)`, {
+          prefix: "haproxy:logs",
+        });
+
+        // Envoyer les logs en cache (du plus ancien au plus récent)
+        // Les logs sont déjà triés par timestamp dans getCachedLogsLast24h
+        for (const cachedLog of cachedLogs) {
+          if (
+            cachedLog.log &&
+            cachedLog.log.trim() &&
+            !shouldIgnoreLog(cachedLog.log)
+          ) {
+            callbacks.onStream("stdout", cachedLog.log + "\n");
+          }
+        }
+
+        logger.debug(
+          "Logs en cache envoyés, démarrage du streaming en temps réel"
+        );
+      } else {
+        logger.debug(
+          "Aucun log en cache trouvé, démarrage direct du streaming"
+        );
+      }
+    } catch (error) {
+      logger.warn("Erreur lors de la récupération des logs en cache", {
+        error: error.message,
+      });
+      // Continuer même si le cache échoue
+    }
+
+    // ÉTAPE 2 : Démarrer le streaming en temps réel
     // Commande pour suivre les logs HAProxy via journalctl
     // Utiliser nsenter pour exécuter sur l'hôte depuis le conteneur
     const journalctlCommand = "journalctl -f -u haproxy --no-pager";
@@ -76,16 +116,23 @@ export async function getHaproxyLogs(params = {}, callbacks = {}) {
     let buffer = "";
 
     // Lire stdout ligne par ligne
-    journalctlProcess.stdout.on("data", (chunk) => {
+    journalctlProcess.stdout.on("data", async (chunk) => {
       buffer += chunk.toString();
       const lines = buffer.split("\n");
       // Garder la dernière ligne incomplète dans le buffer
       buffer = lines.pop() || "";
 
-      // Envoyer chaque ligne complète via le callback (en filtrant les status 101)
+      // Traiter chaque ligne complète
       for (const line of lines) {
         if (line.trim() && !shouldIgnoreLog(line)) {
+          // Envoyer le log via le callback
           callbacks.onStream("stdout", line + "\n");
+
+          // Stocker le log dans Redis (en arrière-plan, ne pas bloquer)
+          storeLog(logKey, line).catch((error) => {
+            // Erreurs de stockage Redis sont déjà loggées dans storeLog
+            // On ne bloque pas le streaming en cas d'erreur Redis
+          });
         }
       }
     });

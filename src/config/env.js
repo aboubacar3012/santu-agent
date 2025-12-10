@@ -76,5 +76,12 @@ export function loadConfig() {
     frontendHost: "0.0.0.0",
     // Route HTTP utilisée comme point de contrôle de santé.
     healthcheckPath: "/healthcheck",
+    // Configuration Redis (optionnelle)
+    redis: {
+      host: "devoups-agent-redis",
+      port: "6380",
+      password: null,
+      enabled: true,
+    },
   };
 }
