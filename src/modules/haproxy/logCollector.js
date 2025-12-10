@@ -13,6 +13,8 @@ import { storeLog, generateLogKey } from "../../shared/redis.js";
 
 let logCollectorProcess = null;
 let isCollecting = false;
+let currentLogKey = null;
+let keyUpdateInterval = null;
 
 /**
  * Vérifie si un log doit être ignoré (status 101)
@@ -50,8 +52,26 @@ export async function startLogCollector() {
   try {
     logger.info("Démarrage du collecteur de logs HAProxy en arrière-plan");
 
-    // Clé Redis pour les logs d'aujourd'hui
-    const logKey = generateLogKey("haproxy:logs");
+    // Fonction pour mettre à jour la clé Redis (appelée au démarrage et chaque jour)
+    const updateLogKey = () => {
+      const newKey = generateLogKey("haproxy:logs");
+      if (currentLogKey !== newKey) {
+        logger.debug("Mise à jour de la clé Redis pour les logs", {
+          oldKey: currentLogKey,
+          newKey,
+        });
+        currentLogKey = newKey;
+      }
+      return currentLogKey;
+    };
+
+    // Initialiser la clé
+    currentLogKey = updateLogKey();
+
+    // Mettre à jour la clé toutes les heures pour s'assurer qu'on utilise la bonne clé du jour
+    keyUpdateInterval = setInterval(() => {
+      updateLogKey();
+    }, 60 * 60 * 1000); // Toutes les heures
 
     // Commande pour suivre les logs HAProxy via journalctl
     const journalctlCommand = "journalctl -f -u haproxy --no-pager";
@@ -76,6 +96,9 @@ export async function startLogCollector() {
       // Traiter chaque ligne complète
       for (const line of lines) {
         if (line.trim() && !shouldIgnoreLog(line)) {
+          // Mettre à jour la clé si nécessaire (au cas où on change de jour)
+          const logKey = updateLogKey();
+          
           // Stocker le log dans Redis (en arrière-plan, ne pas bloquer)
           storeLog(logKey, line).catch((error) => {
             // Erreurs de stockage Redis sont déjà loggées dans storeLog
@@ -107,6 +130,12 @@ export async function startLogCollector() {
       });
       isCollecting = false;
       logCollectorProcess = null;
+      
+      // Nettoyer l'intervalle de mise à jour de la clé
+      if (keyUpdateInterval) {
+        clearInterval(keyUpdateInterval);
+        keyUpdateInterval = null;
+      }
 
       // Tentative de redémarrage automatique après 5 secondes
       if (code !== 0) {
@@ -145,6 +174,12 @@ export async function stopLogCollector() {
   try {
     logger.info("Arrêt du collecteur de logs HAProxy");
 
+    // Nettoyer l'intervalle de mise à jour de la clé
+    if (keyUpdateInterval) {
+      clearInterval(keyUpdateInterval);
+      keyUpdateInterval = null;
+    }
+
     if (logCollectorProcess && !logCollectorProcess.killed) {
       logCollectorProcess.kill("SIGTERM");
 
@@ -158,6 +193,7 @@ export async function stopLogCollector() {
 
     isCollecting = false;
     logCollectorProcess = null;
+    currentLogKey = null;
 
     logger.info("Collecteur de logs HAProxy arrêté");
   } catch (error) {

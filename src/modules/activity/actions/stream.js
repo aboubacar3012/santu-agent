@@ -206,12 +206,9 @@ function processDockerEvent(event, callbacks) {
 
       callbacks.onStream("activity", JSON.stringify(systemEvent));
 
-      // Stocker l'événement dans Redis (en arrière-plan, ne pas bloquer)
-      const activityKey = generateActivityKey("activity:events");
-      storeActivityEvent(activityKey, systemEvent).catch((error) => {
-        // Erreurs de stockage Redis sont déjà loggées dans storeActivityEvent
-        // On ne bloque pas le streaming en cas d'erreur Redis
-      });
+      // Ne PAS stocker l'événement dans Redis ici car le collecteur en arrière-plan le fait déjà
+      // Cela évite les doublons et améliore les performances
+      // Le collecteur stocke tous les événements de manière continue, même sans client connecté
     }
   } catch (error) {
     logger.debug("Erreur parsing événement Docker", {
@@ -308,13 +305,9 @@ async function startSSHEventsCollector(callbacks, cleanupFunctions) {
                 });
                 callbacks.onStream("activity", JSON.stringify(event));
 
-                // Stocker l'événement dans Redis (en arrière-plan, ne pas bloquer)
-                const activityKey = generateActivityKey("activity:events");
-                storeActivityEvent(activityKey, event).catch((error) => {
-                  logger.warn("Erreur stockage événement SSH dans stream", {
-                    error: error.message,
-                  });
-                });
+                // Ne PAS stocker l'événement dans Redis ici car le collecteur en arrière-plan le fait déjà
+                // Cela évite les doublons et améliore les performances
+                // Le collecteur stocke tous les événements de manière continue, même sans client connecté
               }
             }
           }
@@ -531,12 +524,9 @@ function startSystemEventsCollector(callbacks, cleanupFunctions) {
             );
             callbacks.onStream("activity", JSON.stringify(event));
 
-            // Stocker l'événement dans Redis (en arrière-plan, ne pas bloquer)
-            const activityKey = generateActivityKey("activity:events");
-            storeActivityEvent(activityKey, event).catch((error) => {
-              // Erreurs de stockage Redis sont déjà loggées dans storeActivityEvent
-              // On ne bloque pas le streaming en cas d'erreur Redis
-            });
+            // Ne PAS stocker l'événement dans Redis ici car le collecteur en arrière-plan le fait déjà
+            // Cela évite les doublons et améliore les performances
+            // Le collecteur stocke tous les événements de manière continue, même sans client connecté
 
             lastSystemEventSent["HIGH_CPU_USAGE"] = now;
           }

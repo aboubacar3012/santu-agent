@@ -128,11 +128,9 @@ export async function getHaproxyLogs(params = {}, callbacks = {}) {
           // Envoyer le log via le callback
           callbacks.onStream("stdout", line + "\n");
 
-          // Stocker le log dans Redis (en arrière-plan, ne pas bloquer)
-          storeLog(logKey, line).catch((error) => {
-            // Erreurs de stockage Redis sont déjà loggées dans storeLog
-            // On ne bloque pas le streaming en cas d'erreur Redis
-          });
+          // Ne PAS stocker le log dans Redis ici car le collecteur en arrière-plan le fait déjà
+          // Cela évite les doublons et améliore les performances
+          // Le collecteur stocke tous les logs de manière continue, même sans client connecté
         }
       }
     });

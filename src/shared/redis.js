@@ -107,6 +107,31 @@ async function getRedisClient() {
  * @param {number} maxLogs - Nombre maximum de logs à garder par jour (défaut: 10000)
  * @returns {Promise<boolean>} True si stocké avec succès, false sinon
  */
+/**
+ * Génère un hash simple pour un log (pour éviter les doublons)
+ * @param {string} logLine - Ligne de log
+ * @returns {string} Hash du log
+ */
+function hashLogLine(logLine) {
+  if (!logLine || typeof logLine !== "string") {
+    return "";
+  }
+  
+  // Utiliser un hash simple basé sur le contenu du log
+  // Pour les logs HAProxy, on peut utiliser le JSON s'il existe
+  try {
+    const jsonMatch = logLine.match(/\{.*\}/);
+    if (jsonMatch) {
+      // Si c'est un log JSON, utiliser le JSON comme identifiant unique
+      return jsonMatch[0];
+    }
+  } catch (error) {
+    // Ignorer les erreurs de parsing
+  }
+  // Sinon, utiliser la ligne complète comme identifiant
+  return logLine.trim();
+}
+
 export async function storeLog(
   key,
   logLine,
@@ -119,24 +144,73 @@ export async function storeLog(
       return false; // Redis non disponible, continuer sans cache
     }
 
+    // Générer un identifiant unique pour ce log (pour éviter les doublons)
+    const logHash = hashLogLine(logLine);
+    const logId = `log:${Buffer.from(logHash)
+      .toString("base64")
+      .substring(0, 50)}`;
+
+    // Utiliser un Set Redis pour stocker les IDs des logs déjà stockés (déduplication)
+    const seenKey = `${key}:seen`;
+    const isSeen = await client.sIsMember(seenKey, logId);
+
+    if (isSeen) {
+      // Log déjà stocké, ne pas le stocker à nouveau
+      logger.debug("Log déjà en cache, ignoré", {
+        key,
+        logId: logId.substring(0, 20),
+      });
+      return true; // Retourner true car le log existe déjà
+    }
+
     // Utiliser une liste Redis pour stocker les logs (LPUSH pour ajouter au début)
     // Chaque élément de la liste est un JSON avec timestamp et logLine
     const logEntry = JSON.stringify({
       timestamp: Date.now(),
       log: logLine,
+      id: logId, // Ajouter l'ID pour faciliter la déduplication
     });
 
     // Ajouter le log au début de la liste
     await client.lPush(key, logEntry);
 
+    // Marquer ce log comme vu dans le Set
+    await client.sAdd(seenKey, logId);
+
     // Limiter la taille de la liste pour éviter qu'elle ne devienne trop grande
     // On garde les N derniers logs (les plus récents sont au début avec lPush)
     if (maxLogs > 0) {
       await client.lTrim(key, 0, maxLogs - 1);
+
+      // Nettoyer le Set des IDs vus pour éviter qu'il ne devienne trop grand
+      // On garde seulement les IDs des logs qui sont encore dans la liste
+      const listLength = await client.lLen(key);
+      if (listLength > 0) {
+        const logs = await client.lRange(key, 0, listLength - 1);
+        const currentIds = new Set();
+        logs.forEach((entry) => {
+          try {
+            const parsed = JSON.parse(entry);
+            if (parsed.id) {
+              currentIds.add(parsed.id);
+            }
+          } catch (error) {
+            // Ignorer les erreurs de parsing
+          }
+        });
+
+        // Récupérer tous les IDs du Set et supprimer ceux qui ne sont plus dans la liste
+        const allSeenIds = await client.sMembers(seenKey);
+        const idsToRemove = allSeenIds.filter((id) => !currentIds.has(id));
+        if (idsToRemove.length > 0) {
+          await client.sRem(seenKey, idsToRemove);
+        }
+      }
     }
 
-    // Définir le TTL sur la clé
+    // Définir le TTL sur la clé et le Set
     await client.expire(key, ttlSeconds);
+    await client.expire(seenKey, ttlSeconds);
 
     return true;
   } catch (error) {
@@ -214,36 +288,65 @@ export async function getCachedLogsLast24h(prefix, limitPerDay = 10000) {
     }
 
     // Générer les clés pour aujourd'hui et hier
-    const today = new Date();
+    const now = Date.now();
+    const today = new Date(now);
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
 
     const todayKey = generateLogKey(prefix, today);
     const yesterdayKey = generateLogKey(prefix, yesterday);
 
-    // Récupérer les logs d'hier et d'aujourd'hui
+    // Récupérer les logs d'hier et d'aujourd'hui en parallèle
     const [yesterdayLogs, todayLogs] = await Promise.all([
       getCachedLogs(yesterdayKey, limitPerDay),
       getCachedLogs(todayKey, limitPerDay),
     ]);
 
+    logger.debug("Récupération des logs en cache", {
+      prefix,
+      yesterdayKey,
+      todayKey,
+      yesterdayCount: yesterdayLogs.length,
+      todayCount: todayLogs.length,
+    });
+
     // Filtrer les logs d'hier pour ne garder que ceux des dernières 24h
-    const now = Date.now();
     const twentyFourHoursAgo = now - 24 * 60 * 60 * 1000;
     const filteredYesterdayLogs = yesterdayLogs.filter(
       (log) => log.timestamp >= twentyFourHoursAgo
     );
 
-    // Combiner et trier par timestamp (du plus ancien au plus récent)
-    const allLogs = [...filteredYesterdayLogs, ...todayLogs].sort(
-      (a, b) => a.timestamp - b.timestamp
-    );
+    // Combiner tous les logs
+    const allLogs = [...filteredYesterdayLogs, ...todayLogs];
 
-    return allLogs;
+    // Dédupliquer les logs basés sur leur ID (si présent) ou leur contenu
+    const seenIds = new Set();
+    const deduplicatedLogs = allLogs.filter((log) => {
+      // Utiliser l'ID si présent, sinon utiliser le hash du log
+      const logId = log.id || hashLogLine(log.log || "");
+      if (seenIds.has(logId)) {
+        return false; // Doublon, ignorer
+      }
+      seenIds.add(logId);
+      return true;
+    });
+
+    // Trier par timestamp (du plus ancien au plus récent)
+    deduplicatedLogs.sort((a, b) => a.timestamp - b.timestamp);
+
+    logger.debug("Logs en cache récupérés et dédupliqués", {
+      prefix,
+      totalBeforeDedup: allLogs.length,
+      totalAfterDedup: deduplicatedLogs.length,
+      duplicatesRemoved: allLogs.length - deduplicatedLogs.length,
+    });
+
+    return deduplicatedLogs;
   } catch (error) {
     logger.warn("Erreur lors de la récupération des logs des dernières 24h", {
       error: error.message,
       prefix,
+      stack: error.stack,
     });
     return [];
   }
@@ -272,6 +375,30 @@ export function generateActivityKey(prefix, date = new Date()) {
 }
 
 /**
+ * Génère un hash simple pour un événement d'activité (pour éviter les doublons)
+ * @param {Object} event - Événement d'activité
+ * @returns {string} Hash de l'événement
+ */
+function hashActivityEvent(event) {
+  if (!event || typeof event !== "object") {
+    return "";
+  }
+
+  // Utiliser les propriétés principales de l'événement pour créer un identifiant unique
+  // eventType + source + timestamp + metadata clés (username, ip, container, etc.)
+  const keyParts = [event.eventType, event.source, event.timestamp];
+
+  // Ajouter les métadonnées importantes pour la déduplication
+  if (event.metadata) {
+    if (event.metadata.username) keyParts.push(event.metadata.username);
+    if (event.metadata.ip) keyParts.push(event.metadata.ip);
+    if (event.metadata.container) keyParts.push(event.metadata.container);
+  }
+
+  return keyParts.join("|");
+}
+
+/**
  * Stocke un événement d'activité dans Redis avec un TTL de 7 jours
  * @param {string} key - Clé Redis (ex: "activity:events:2025-12-10")
  * @param {Object} event - Événement à stocker
@@ -291,31 +418,86 @@ export async function storeActivityEvent(
       return false; // Redis non disponible, continuer sans cache
     }
 
+    // Générer un identifiant unique pour cet événement (pour éviter les doublons)
+    const eventHash = hashActivityEvent(event);
+    const eventId = `event:${Buffer.from(eventHash)
+      .toString("base64")
+      .substring(0, 50)}`;
+
+    // Utiliser un Set Redis pour stocker les IDs des événements déjà stockés (déduplication)
+    const seenKey = `${key}:seen`;
+    const isSeen = await client.sIsMember(seenKey, eventId);
+
+    if (isSeen) {
+      // Événement déjà stocké, ne pas le stocker à nouveau
+      logger.debug("Événement déjà en cache, ignoré", {
+        key,
+        eventId: eventId.substring(0, 20),
+        eventType: event.eventType,
+      });
+      return true; // Retourner true car l'événement existe déjà
+    }
+
     // Utiliser une liste Redis pour stocker les événements (LPUSH pour ajouter au début)
     // Chaque élément de la liste est un JSON avec timestamp et event
     const eventEntry = JSON.stringify({
-      timestamp: event.timestamp ? new Date(event.timestamp).getTime() : Date.now(),
+      timestamp: event.timestamp
+        ? new Date(event.timestamp).getTime()
+        : Date.now(),
       event,
+      id: eventId, // Ajouter l'ID pour faciliter la déduplication
     });
 
     // Ajouter l'événement au début de la liste
     await client.lPush(key, eventEntry);
 
+    // Marquer cet événement comme vu dans le Set
+    await client.sAdd(seenKey, eventId);
+
     // Limiter la taille de la liste pour éviter qu'elle ne devienne trop grande
     // On garde les N derniers événements (les plus récents sont au début avec lPush)
     if (maxEvents > 0) {
       await client.lTrim(key, 0, maxEvents - 1);
+
+      // Nettoyer le Set des IDs vus pour éviter qu'il ne devienne trop grand
+      // On garde seulement les IDs des événements qui sont encore dans la liste
+      const listLength = await client.lLen(key);
+      if (listLength > 0) {
+        const events = await client.lRange(key, 0, listLength - 1);
+        const currentIds = new Set();
+        events.forEach((entry) => {
+          try {
+            const parsed = JSON.parse(entry);
+            if (parsed.id) {
+              currentIds.add(parsed.id);
+            }
+          } catch (error) {
+            // Ignorer les erreurs de parsing
+          }
+        });
+
+        // Récupérer tous les IDs du Set et supprimer ceux qui ne sont plus dans la liste
+        const allSeenIds = await client.sMembers(seenKey);
+        const idsToRemove = allSeenIds.filter((id) => !currentIds.has(id));
+        if (idsToRemove.length > 0) {
+          await client.sRem(seenKey, idsToRemove);
+        }
+      }
     }
 
-    // Définir le TTL sur la clé
+    // Définir le TTL sur la clé et le Set
     await client.expire(key, ttlSeconds);
+    await client.expire(seenKey, ttlSeconds);
 
     return true;
   } catch (error) {
-    logger.warn("Erreur lors du stockage d'un événement d'activité dans Redis", {
-      error: error.message,
-      key,
-    });
+    logger.warn(
+      "Erreur lors du stockage d'un événement d'activité dans Redis",
+      {
+        error: error.message,
+        key,
+      }
+    );
     return false;
   }
 }
@@ -378,7 +560,10 @@ export async function getCachedActivityEvents(key, limit = 10000) {
  * @param {number} limitPerDay - Nombre maximum d'événements par jour (défaut: 10000)
  * @returns {Promise<Array<{timestamp: number, event: Object}>>} Liste des événements en cache (du plus ancien au plus récent)
  */
-export async function getCachedActivityEventsLast7Days(prefix, limitPerDay = 10000) {
+export async function getCachedActivityEventsLast7Days(
+  prefix,
+  limitPerDay = 10000
+) {
   try {
     const client = await getRedisClient();
     if (!client) {
@@ -386,7 +571,8 @@ export async function getCachedActivityEventsLast7Days(prefix, limitPerDay = 100
     }
 
     // Générer les clés pour les 7 derniers jours
-    const today = new Date();
+    const now = Date.now();
+    const today = new Date(now);
     const keys = [];
     const eventsPromises = [];
 
@@ -401,8 +587,13 @@ export async function getCachedActivityEventsLast7Days(prefix, limitPerDay = 100
     // Récupérer tous les événements en parallèle
     const allEventsArrays = await Promise.all(eventsPromises);
 
+    logger.debug("Récupération des événements en cache", {
+      prefix,
+      keys,
+      counts: allEventsArrays.map((arr) => arr.length),
+    });
+
     // Filtrer les événements pour ne garder que ceux des 7 derniers jours
-    const now = Date.now();
     const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
 
     // Aplatir et filtrer
@@ -410,15 +601,38 @@ export async function getCachedActivityEventsLast7Days(prefix, limitPerDay = 100
       .flat()
       .filter((entry) => entry.timestamp >= sevenDaysAgo);
 
-    // Trier par timestamp (du plus ancien au plus récent)
-    allEvents.sort((a, b) => a.timestamp - b.timestamp);
-
-    return allEvents;
-  } catch (error) {
-    logger.warn("Erreur lors de la récupération des événements des 7 derniers jours", {
-      error: error.message,
-      prefix,
+    // Dédupliquer les événements basés sur leur ID (si présent) ou leur hash
+    const seenIds = new Set();
+    const deduplicatedEvents = allEvents.filter((entry) => {
+      // Utiliser l'ID si présent, sinon utiliser le hash de l'événement
+      const eventId = entry.id || hashActivityEvent(entry.event || {});
+      if (seenIds.has(eventId)) {
+        return false; // Doublon, ignorer
+      }
+      seenIds.add(eventId);
+      return true;
     });
+
+    // Trier par timestamp (du plus ancien au plus récent)
+    deduplicatedEvents.sort((a, b) => a.timestamp - b.timestamp);
+
+    logger.debug("Événements en cache récupérés et dédupliqués", {
+      prefix,
+      totalBeforeDedup: allEvents.length,
+      totalAfterDedup: deduplicatedEvents.length,
+      duplicatesRemoved: allEvents.length - deduplicatedEvents.length,
+    });
+
+    return deduplicatedEvents;
+  } catch (error) {
+    logger.warn(
+      "Erreur lors de la récupération des événements des 7 derniers jours",
+      {
+        error: error.message,
+        prefix,
+        stack: error.stack,
+      }
+    );
     return [];
   }
 }

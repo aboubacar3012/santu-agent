@@ -17,6 +17,8 @@ let dockerEventsCollector = null;
 let sshEventsCollectors = [];
 let systemEventsInterval = null;
 let isCollecting = false;
+let currentActivityKey = null;
+let keyUpdateInterval = null;
 
 let lastCPUTotals = null;
 let lastSystemEventSent = {};
@@ -211,8 +213,9 @@ function processDockerEvent(event) {
         }
       );
 
-      // Stocker l'événement dans Redis
-      const activityKey = generateActivityKey("activity:events");
+      // Mettre à jour la clé si nécessaire (au cas où on change de jour)
+      const activityKey =
+        currentActivityKey || generateActivityKey("activity:events");
       storeActivityEvent(activityKey, systemEvent).catch((error) => {
         // Erreurs de stockage Redis sont déjà loggées dans storeActivityEvent
       });
@@ -426,8 +429,10 @@ async function startSSHEventsCollector() {
                       eventType: event.eventType,
                     }
                   );
-                  // Stocker l'événement dans Redis
-                  const activityKey = generateActivityKey("activity:events");
+                  // Mettre à jour la clé si nécessaire (au cas où on change de jour)
+                  const activityKey =
+                    currentActivityKey ||
+                    generateActivityKey("activity:events");
                   await storeActivityEvent(activityKey, event).catch(
                     (error) => {
                       logger.warn("Erreur stockage événement SSH initial", {
@@ -470,8 +475,9 @@ async function startSSHEventsCollector() {
                   eventType: event.eventType,
                   metadata: event.metadata,
                 });
-                // Stocker l'événement dans Redis
-                const activityKey = generateActivityKey("activity:events");
+                // Mettre à jour la clé si nécessaire (au cas où on change de jour)
+                const activityKey =
+                  currentActivityKey || generateActivityKey("activity:events");
                 storeActivityEvent(activityKey, event).catch((error) => {
                   logger.warn("Erreur stockage événement SSH", {
                     error: error.message,
@@ -535,7 +541,9 @@ function startSystemEventsCollector() {
                 topProcesses,
               }
             );
-            const activityKey = generateActivityKey("activity:events");
+            // Mettre à jour la clé si nécessaire (au cas où on change de jour)
+            const activityKey =
+              currentActivityKey || generateActivityKey("activity:events");
             storeActivityEvent(activityKey, event).catch((error) => {
               // Erreurs de stockage Redis sont déjà loggées
             });
@@ -559,7 +567,9 @@ function startSystemEventsCollector() {
               memoryUsage,
             }
           );
-          const activityKey = generateActivityKey("activity:events");
+          // Mettre à jour la clé si nécessaire (au cas où on change de jour)
+          const activityKey =
+            currentActivityKey || generateActivityKey("activity:events");
           storeActivityEvent(activityKey, event).catch((error) => {
             // Erreurs de stockage Redis sont déjà loggées
           });
@@ -582,7 +592,9 @@ function startSystemEventsCollector() {
               diskUsage,
             }
           );
-          const activityKey = generateActivityKey("activity:events");
+          // Mettre à jour la clé si nécessaire (au cas où on change de jour)
+          const activityKey =
+            currentActivityKey || generateActivityKey("activity:events");
           storeActivityEvent(activityKey, event).catch((error) => {
             // Erreurs de stockage Redis sont déjà loggées
           });
@@ -612,6 +624,30 @@ export async function startActivityCollector() {
       "Démarrage du collecteur d'événements d'activité en arrière-plan"
     );
 
+    // Fonction pour mettre à jour la clé Redis (appelée au démarrage et chaque jour)
+    const updateActivityKey = () => {
+      const newKey = generateActivityKey("activity:events");
+      if (currentActivityKey !== newKey) {
+        logger.debug(
+          "Mise à jour de la clé Redis pour les événements d'activité",
+          {
+            oldKey: currentActivityKey,
+            newKey,
+          }
+        );
+        currentActivityKey = newKey;
+      }
+      return currentActivityKey;
+    };
+
+    // Initialiser la clé
+    currentActivityKey = updateActivityKey();
+
+    // Mettre à jour la clé toutes les heures pour s'assurer qu'on utilise la bonne clé du jour
+    keyUpdateInterval = setInterval(() => {
+      updateActivityKey();
+    }, 60 * 60 * 1000); // Toutes les heures
+
     // Démarrer les collecteurs pour toutes les sources
     await startDockerEventsCollector();
     await startSSHEventsCollector();
@@ -639,6 +675,12 @@ export async function stopActivityCollector() {
 
   try {
     logger.info("Arrêt du collecteur d'événements d'activité");
+
+    // Nettoyer l'intervalle de mise à jour de la clé
+    if (keyUpdateInterval) {
+      clearInterval(keyUpdateInterval);
+      keyUpdateInterval = null;
+    }
 
     // Arrêter Docker events
     if (dockerEventsCollector) {
@@ -679,6 +721,7 @@ export async function stopActivityCollector() {
     }
 
     isCollecting = false;
+    currentActivityKey = null;
 
     logger.info("Collecteur d'événements d'activité arrêté");
   } catch (error) {
