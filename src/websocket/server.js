@@ -99,45 +99,45 @@ export function createFrontendServer({
     // ============================================
     // ÉTAPE 3 : Vérifier le token JWT via l'API
     // ============================================
-    if (clientToken) {
-      // Un token est fourni : le vérifier via l'API backend
-      // Cette vérification appelle https://devoups.elyamaje.com/api/token?verify=token
-      // L'API vérifie : signature JWT, expiration, existence utilisateur, statut actif
-      const verificationResult = await verifyToken(clientToken);
+    // if (clientToken) {
+    //   // Un token est fourni : le vérifier via l'API backend
+    //   // Cette vérification appelle https://devoups.elyamaje.com/api/token?verify=token
+    //   // L'API vérifie : signature JWT, expiration, existence utilisateur, statut actif
+    //   const verificationResult = await verifyToken(clientToken);
 
-      if (!verificationResult.valid) {
-        // Token invalide : refuser la connexion
-        // Raisons possibles :
-        // - Token expiré (plus de 2-3 minutes)
-        // - Signature invalide (token modifié ou secret incorrect)
-        // - Utilisateur introuvable ou inactif
-        // - Erreur réseau/timeout lors de la vérification
-        logger.warn("Tentative de connexion avec un token invalide", {
-          remoteAddress: req.socket.remoteAddress,
-          requestedServerHostname,
-          error: verificationResult.error,
-        });
-        ws.close(1008, verificationResult.error || "Invalid token");
-        return;
-      }
+    //   if (!verificationResult.valid) {
+    //     // Token invalide : refuser la connexion
+    //     // Raisons possibles :
+    //     // - Token expiré (plus de 2-3 minutes)
+    //     // - Signature invalide (token modifié ou secret incorrect)
+    //     // - Utilisateur introuvable ou inactif
+    //     // - Erreur réseau/timeout lors de la vérification
+    //     logger.warn("Tentative de connexion avec un token invalide", {
+    //       remoteAddress: req.socket.remoteAddress,
+    //       requestedServerHostname,
+    //       error: verificationResult.error,
+    //     });
+    //     ws.close(1008, verificationResult.error || "Invalid token");
+    //     return;
+    //   }
 
-      // Token valide : logger les informations utilisateur pour traçabilité
-      logger.info("Token vérifié avec succès", {
-        remoteAddress: req.socket.remoteAddress,
-        userId: verificationResult.userId,
-        email: verificationResult.email,
-      });
-    } else if (token) {
-      // Mode fallback : si un token statique est configuré dans l'environnement
-      // mais qu'aucun token client n'est fourni, refuser la connexion
-      // (ce mode est principalement pour le développement/test)
-      logger.warn("Tentative de connexion sans token", {
-        remoteAddress: req.socket.remoteAddress,
-        requestedServerHostname,
-      });
-      ws.close(1008, "Token requis");
-      return;
-    }
+    //   // Token valide : logger les informations utilisateur pour traçabilité
+    //   logger.info("Token vérifié avec succès", {
+    //     remoteAddress: req.socket.remoteAddress,
+    //     userId: verificationResult.userId,
+    //     email: verificationResult.email,
+    //   });
+    // } else if (token) {
+    //   // Mode fallback : si un token statique est configuré dans l'environnement
+    //   // mais qu'aucun token client n'est fourni, refuser la connexion
+    //   // (ce mode est principalement pour le développement/test)
+    //   logger.warn("Tentative de connexion sans token", {
+    //     remoteAddress: req.socket.remoteAddress,
+    //     requestedServerHostname,
+    //   });
+    //   ws.close(1008, "Token requis");
+    //   return;
+    // }
     // Si aucun token n'est fourni ET aucun token statique n'est configuré,
     // on accepte la connexion (mode développement sans authentification)
 
