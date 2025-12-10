@@ -244,47 +244,60 @@ export async function getDiskInfo() {
 }
 
 /**
- * Récupère l'IP principale du serveur
+ * Exécute une commande sur l'hôte via nsenter
+ * @param {string} command - Commande à exécuter
+ * @param {Object} [options] - Options d'exécution
+ * @returns {Promise<Object>} Résultat de l'exécution
+ */
+async function executeHostCommand(command, options = {}) {
+  const escapedCommand = command.replace(/'/g, "'\"'\"'");
+  const nsenterCommand = `nsenter -t 1 -m -u -i -n -p -- sh -c '${escapedCommand}'`;
+
+  return await executeCommand(nsenterCommand, {
+    timeout: options.timeout || 5000,
+    maxBuffer: options.maxBuffer || 10 * 1024 * 1024,
+  });
+}
+
+/**
+ * Récupère l'IP principale du serveur en utilisant nsenter pour accéder à l'hôte
  * @returns {Promise<string|null>} IP principale ou null en cas d'erreur
  */
 export async function getNetworkInfo() {
   try {
-    // Essayer d'abord avec hostname -I
-    const { stdout } = await executeCommand("hostname -I | awk '{print $1}'", {
-      timeout: 5000,
-    });
+    // Utiliser nsenter pour exécuter hostname -I dans l'espace de noms de l'hôte
+    // Cela permet d'obtenir l'IP réelle du serveur et non celle du conteneur Docker
+    const { stdout } = await executeHostCommand(
+      "hostname -I | awk '{print $1}'",
+      {
+        timeout: 5000,
+      }
+    );
     if (stdout && stdout.trim()) {
       const ip = stdout.trim();
       // Vérifier que ce n'est pas une IP loopback
       if (!ip.startsWith("127.") && ip !== "::1") {
+        logger.debug("IP principale récupérée via nsenter", { ip });
         return ip;
       }
     }
 
-    // Fallback: lire depuis /proc/net/route
-    if (existsSync("/proc/net/route")) {
-      const content = readFileSync("/proc/net/route", "utf-8");
-      const lines = content.split("\n");
-      // Chercher la première interface non-loopback avec une route par défaut
-      for (let i = 1; i < lines.length; i++) {
-        const parts = lines[i].trim().split(/\s+/);
-        if (parts.length >= 3 && parts[1] === "00000000") {
-          // Route par défaut trouvée, maintenant récupérer l'IP de l'interface
-          const iface = parts[0];
-          const { stdout: ipOut } = await executeCommand(
-            `ip addr show ${iface} | grep 'inet ' | awk '{print $2}' | cut -d/ -f1`,
-            { timeout: 5000 }
-          );
-          if (ipOut && ipOut.trim()) {
-            const ip = ipOut.trim();
-            if (!ip.startsWith("127.") && ip !== "::1") {
-              return ip;
-            }
-          }
-        }
+    // Fallback: utiliser ip addr via nsenter pour trouver l'IP de l'interface principale
+    const { stdout: ipAddrOut } = await executeHostCommand(
+      "ip addr show | grep 'inet ' | grep -v '127.0.0.1' | head -1 | awk '{print $2}' | cut -d/ -f1",
+      { timeout: 5000 }
+    );
+    if (ipAddrOut && ipAddrOut.trim()) {
+      const ip = ipAddrOut.trim();
+      if (!ip.startsWith("127.") && ip !== "::1") {
+        logger.debug("IP principale récupérée via ip addr (nsenter)", { ip });
+        return ip;
       }
     }
 
+    logger.warn(
+      "Impossible de récupérer l'IP principale du serveur via nsenter"
+    );
     return null;
   } catch (error) {
     logger.error("Erreur lors de la récupération de l'IP principale", {
