@@ -14,6 +14,7 @@ import { executeCommand } from "../../shared/executor.js";
 import { spawn } from "child_process";
 
 let dockerEventsCollector = null;
+let dockerEventsInterval = null; // Intervalle pour vérifier les événements Docker périodiquement
 let sshEventsCollectors = [];
 let systemEventsInterval = null;
 let isCollecting = false;
@@ -22,7 +23,9 @@ let keyUpdateInterval = null;
 
 let lastCPUTotals = null;
 let lastSystemEventSent = {};
+let lastDockerEventsCheck = Date.now(); // Timestamp du dernier check Docker
 const cooldownPeriod = 10 * 60 * 1000; // 10 minutes
+const COLLECTION_INTERVAL = 10 * 1000; // 10 secondes (comme dans le Python)
 
 /**
  * Crée un événement système formaté
@@ -213,11 +216,19 @@ function processDockerEvent(event) {
         }
       );
 
+      logger.debug("Événement Docker détecté (collecteur)", {
+        eventType,
+        container: containerName,
+        action: Action,
+      });
+
       // Mettre à jour la clé si nécessaire (au cas où on change de jour)
       const activityKey =
         currentActivityKey || generateActivityKey("activity:events");
       storeActivityEvent(activityKey, systemEvent).catch((error) => {
-        // Erreurs de stockage Redis sont déjà loggées dans storeActivityEvent
+        logger.warn("Erreur stockage événement Docker", {
+          error: error.message,
+        });
       });
     }
   } catch (error) {
@@ -360,35 +371,97 @@ async function getTopCPUProcesses(limit = 3) {
 }
 
 /**
- * Collecte les événements Docker en arrière-plan
+ * Vérifie les événements Docker récents (approche périodique comme dans le Python)
+ */
+async function checkDockerEvents() {
+  try {
+    const sinceTimestamp = Math.floor(lastDockerEventsCheck / 1000);
+    const untilTimestamp = Math.floor(Date.now() / 1000);
+
+    // Utiliser la commande docker events directement comme dans le Python
+    // Utiliser nsenter pour accéder à Docker depuis le conteneur
+    const escapedCommand =
+      `docker events --since ${sinceTimestamp} --until ${untilTimestamp} --format '{{json .}}'`.replace(
+        /'/g,
+        "'\"'\"'"
+      );
+    const command = `nsenter -t 1 -m -u -i -n -p -- sh -c '${escapedCommand}'`;
+
+    const { stdout, stderr, error } = await executeCommand(command, {
+      timeout: 10000,
+    });
+
+    if (error) {
+      logger.debug("Erreur lors de la vérification des événements Docker", {
+        error: error.message,
+        stderr,
+      });
+      return;
+    }
+
+    if (!stdout || !stdout.trim()) {
+      // Pas d'événements, c'est normal
+      return;
+    }
+
+    // Parser chaque ligne (chaque ligne est un JSON)
+    const lines = stdout.trim().split("\n");
+    for (const line of lines) {
+      if (line.trim()) {
+        try {
+          const event = JSON.parse(line);
+          logger.debug("Événement Docker détecté (check périodique)", {
+            type: event.Type,
+            action: event.Action,
+            container: event.Actor?.Attributes?.name,
+          });
+          processDockerEvent(event);
+        } catch (parseError) {
+          logger.debug("Erreur parsing événement Docker", {
+            error: parseError.message,
+            line: line.substring(0, 100),
+          });
+        }
+      }
+    }
+
+    // Mettre à jour le timestamp du dernier check
+    lastDockerEventsCheck = Date.now();
+  } catch (error) {
+    logger.error("Erreur lors de la vérification des événements Docker", {
+      error: error.message,
+      stack: error.stack,
+    });
+  }
+}
+
+/**
+ * Collecte les événements Docker en arrière-plan (approche périodique)
  */
 async function startDockerEventsCollector() {
   try {
-    const docker = getDocker();
+    logger.debug(
+      "Démarrage du collecteur d'événements Docker (mode périodique)"
+    );
 
-    const dockerEvents = docker.getEvents({
-      since: Math.floor(Date.now() / 1000),
-    });
+    // Initialiser le timestamp du dernier check
+    lastDockerEventsCheck = Date.now();
 
-    dockerEvents.on("data", (chunk) => {
-      try {
-        const event = JSON.parse(chunk.toString());
-        processDockerEvent(event);
-      } catch (error) {
-        logger.debug("Erreur parsing événement Docker", {
-          error: error.message,
-        });
-      }
-    });
+    // Faire un premier check immédiatement
+    await checkDockerEvents();
 
-    dockerEvents.on("error", (error) => {
-      logger.error("Erreur Docker events stream", { error: error.message });
-    });
+    // Ensuite, vérifier périodiquement toutes les 30 secondes (comme dans le Python)
+    dockerEventsInterval = setInterval(async () => {
+      await checkDockerEvents();
+    }, COLLECTION_INTERVAL);
 
-    dockerEventsCollector = dockerEvents;
+    logger.debug(
+      "Collecteur d'événements Docker démarré avec succès (mode périodique)"
+    );
   } catch (error) {
     logger.error("Erreur démarrage collecteur Docker", {
       error: error.message,
+      stack: error.stack,
     });
   }
 }
@@ -518,6 +591,8 @@ async function startSSHEventsCollector() {
  * Collecte les événements système (CPU, mémoire, disque) en arrière-plan
  */
 function startSystemEventsCollector() {
+  logger.debug("Démarrage du collecteur d'événements système");
+
   systemEventsInterval = setInterval(async () => {
     try {
       const now = Date.now();
@@ -526,6 +601,10 @@ function startSystemEventsCollector() {
       const cpuResult = await getCPUUsage(lastCPUTotals);
       if (cpuResult) {
         lastCPUTotals = cpuResult.totals;
+        logger.debug("Vérification CPU", {
+          cpuUsage: cpuResult.cpu,
+          threshold: 85,
+        });
         if (cpuResult.cpu !== null && cpuResult.cpu > 85) {
           const lastSent = lastSystemEventSent["HIGH_CPU_USAGE"] || 0;
           if (now - lastSent >= cooldownPeriod) {
@@ -541,11 +620,16 @@ function startSystemEventsCollector() {
                 topProcesses,
               }
             );
+            logger.debug("Événement système CPU détecté (collecteur)", {
+              cpuUsage: cpuResult.cpu,
+            });
             // Mettre à jour la clé si nécessaire (au cas où on change de jour)
             const activityKey =
               currentActivityKey || generateActivityKey("activity:events");
             storeActivityEvent(activityKey, event).catch((error) => {
-              // Erreurs de stockage Redis sont déjà loggées
+              logger.warn("Erreur stockage événement système CPU", {
+                error: error.message,
+              });
             });
             lastSystemEventSent["HIGH_CPU_USAGE"] = now;
           }
@@ -554,6 +638,10 @@ function startSystemEventsCollector() {
 
       // Vérifier mémoire
       const memoryUsage = await getMemoryUsage();
+      logger.debug("Vérification mémoire", {
+        memoryUsage,
+        threshold: 85,
+      });
       if (memoryUsage !== null && memoryUsage > 85) {
         const lastSent = lastSystemEventSent["HIGH_MEMORY_USAGE"] || 0;
         if (now - lastSent >= cooldownPeriod) {
@@ -567,11 +655,16 @@ function startSystemEventsCollector() {
               memoryUsage,
             }
           );
+          logger.debug("Événement système mémoire détecté (collecteur)", {
+            memoryUsage,
+          });
           // Mettre à jour la clé si nécessaire (au cas où on change de jour)
           const activityKey =
             currentActivityKey || generateActivityKey("activity:events");
           storeActivityEvent(activityKey, event).catch((error) => {
-            // Erreurs de stockage Redis sont déjà loggées
+            logger.warn("Erreur stockage événement système mémoire", {
+              error: error.message,
+            });
           });
           lastSystemEventSent["HIGH_MEMORY_USAGE"] = now;
         }
@@ -579,6 +672,10 @@ function startSystemEventsCollector() {
 
       // Vérifier disque
       const diskUsage = await getDiskUsage();
+      logger.debug("Vérification disque", {
+        diskUsage,
+        threshold: 85,
+      });
       if (diskUsage !== null && diskUsage > 85) {
         const lastSent = lastSystemEventSent["HIGH_DISK_USAGE"] || 0;
         if (now - lastSent >= cooldownPeriod) {
@@ -592,11 +689,16 @@ function startSystemEventsCollector() {
               diskUsage,
             }
           );
+          logger.debug("Événement système disque détecté (collecteur)", {
+            diskUsage,
+          });
           // Mettre à jour la clé si nécessaire (au cas où on change de jour)
           const activityKey =
             currentActivityKey || generateActivityKey("activity:events");
           storeActivityEvent(activityKey, event).catch((error) => {
-            // Erreurs de stockage Redis sont déjà loggées
+            logger.warn("Erreur stockage événement système disque", {
+              error: error.message,
+            });
           });
           lastSystemEventSent["HIGH_DISK_USAGE"] = now;
         }
@@ -604,9 +706,12 @@ function startSystemEventsCollector() {
     } catch (error) {
       logger.error("Erreur collecte événements système", {
         error: error.message,
+        stack: error.stack,
       });
     }
   }, 30000); // Vérifier toutes les 30 secondes
+
+  logger.debug("Collecteur d'événements système démarré avec succès");
 }
 
 /**
@@ -649,13 +754,21 @@ export async function startActivityCollector() {
     }, 60 * 60 * 1000); // Toutes les heures
 
     // Démarrer les collecteurs pour toutes les sources
+    logger.debug("Démarrage des collecteurs d'événements...");
     await startDockerEventsCollector();
+    logger.debug("Collecteur Docker démarré");
     await startSSHEventsCollector();
+    logger.debug("Collecteur SSH démarré");
     startSystemEventsCollector();
+    logger.debug("Collecteur système démarré");
 
     isCollecting = true;
 
-    logger.info("Collecteur d'événements d'activité démarré avec succès");
+    logger.info("Collecteur d'événements d'activité démarré avec succès", {
+      docker: !!dockerEventsInterval,
+      ssh: sshEventsCollectors.length > 0,
+      system: !!systemEventsInterval,
+    });
   } catch (error) {
     logger.error("Erreur lors du démarrage du collecteur d'activité", {
       error: error.message,
@@ -682,18 +795,12 @@ export async function stopActivityCollector() {
       keyUpdateInterval = null;
     }
 
-    // Arrêter Docker events
-    if (dockerEventsCollector) {
-      try {
-        dockerEventsCollector.removeAllListeners();
-        dockerEventsCollector.destroy?.();
-      } catch (error) {
-        logger.warn("Erreur lors de l'arrêt du collecteur Docker", {
-          error: error.message,
-        });
-      }
-      dockerEventsCollector = null;
+    // Arrêter Docker events (intervalle périodique)
+    if (dockerEventsInterval) {
+      clearInterval(dockerEventsInterval);
+      dockerEventsInterval = null;
     }
+    dockerEventsCollector = null;
 
     // Arrêter SSH collectors
     sshEventsCollectors.forEach((process) => {
