@@ -151,10 +151,10 @@ export async function storeLog(
 /**
  * Récupère les logs en cache depuis Redis
  * @param {string} key - Clé Redis (ex: "haproxy:logs:2025-12-10")
- * @param {number} limit - Nombre maximum de logs à récupérer (défaut: 1000)
+ * @param {number} limit - Nombre maximum de logs à récupérer (défaut: 10000)
  * @returns {Promise<Array<{timestamp: number, log: string}>>} Liste des logs en cache (du plus ancien au plus récent)
  */
-export async function getCachedLogs(key, limit = 1000) {
+export async function getCachedLogs(key, limit = 10000) {
   try {
     const client = await getRedisClient();
     if (!client) {
@@ -203,10 +203,10 @@ export async function getCachedLogs(key, limit = 1000) {
 /**
  * Récupère les logs en cache des dernières 24h depuis Redis
  * @param {string} prefix - Préfixe de la clé (ex: "haproxy:logs")
- * @param {number} limitPerDay - Nombre maximum de logs par jour (défaut: 1000)
+ * @param {number} limitPerDay - Nombre maximum de logs par jour (défaut: 10000)
  * @returns {Promise<Array<{timestamp: number, log: string}>>} Liste des logs en cache (du plus ancien au plus récent)
  */
-export async function getCachedLogsLast24h(prefix, limitPerDay = 1000) {
+export async function getCachedLogsLast24h(prefix, limitPerDay = 10000) {
   try {
     const client = await getRedisClient();
     if (!client) {

@@ -68,7 +68,7 @@ export async function getHaproxyLogs(params = {}, callbacks = {}) {
 
     // ÉTAPE 1 : Récupérer et envoyer les logs en cache des dernières 24h avant de commencer le streaming
     try {
-      const cachedLogs = await getCachedLogsLast24h("haproxy:logs", 1000);
+      const cachedLogs = await getCachedLogsLast24h("haproxy:logs", 10000);
       if (cachedLogs.length > 0) {
         logger.debug(`Envoi de ${cachedLogs.length} logs en cache (24h)`, {
           prefix: "haproxy:logs",
