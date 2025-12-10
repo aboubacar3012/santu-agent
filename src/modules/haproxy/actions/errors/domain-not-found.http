@@ -40,15 +40,7 @@ Content-Type: text/html; charset=utf-8
             margin-bottom: 1.5rem;
             line-height: 1.6;
         }
-        .logo-container {
-            margin: 1.5rem 0;
-        }
-        .logo {
-            width: auto;
-            height: auto;
-            max-width: 336px;
-            max-height: 312px;
-        }
+
         .domain-info {
             background: #f9fafb;
             padding: 1rem;
@@ -98,10 +90,6 @@ Content-Type: text/html; charset=utf-8
         Le domaine que vous essayez d'atteindre<br>
         n'est pas configuré sur ce serveur.
     </p>
-
-    <div class="logo-container">
-        <img src="https://play.elyamaje.com/MaintenanceIllustration.png" alt="ElyaMaje Logo" class="logo" />
-    </div>
 
     <div class="domain-info">
         <strong>Domaine demandé :</strong> <span id="current-domain"></span>
