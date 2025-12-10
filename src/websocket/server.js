@@ -31,21 +31,34 @@ async function executeHostCommand(command, options = {}) {
 async function getHostname() {
   try {
     // Utiliser nsenter pour exécuter hostname sur l'hôte depuis le conteneur
-    const { stdout } = await executeHostCommand("hostname", {
+    const result = await executeHostCommand("hostname", {
       timeout: 5000,
     });
 
-    if (stdout && stdout.trim()) {
-      const hostname = stdout.trim();
-      logger.debug(`Hostname récupéré via nsenter: ${hostname}`);
+    logger.debug("Résultat de getHostname", {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      hasError: result.error,
+      stdoutLength: result.stdout?.length,
+      stdoutTrimmed: result.stdout?.trim(),
+    });
+
+    if (result.stdout && result.stdout.trim()) {
+      const hostname = result.stdout.trim();
+      logger.info(`Hostname récupéré via nsenter: ${hostname}`);
       return hostname;
     }
 
-    logger.warn("Impossible de récupérer le hostname via nsenter");
+    logger.warn("Impossible de récupérer le hostname via nsenter", {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      error: result.error,
+    });
     return null;
   } catch (error) {
     logger.error("Erreur lors de la récupération du hostname via nsenter", {
       error: error.message,
+      stack: error.stack,
     });
     return null;
   }
@@ -180,10 +193,18 @@ export async function createFrontendServer({
         expectedHostname: hostname,
         normalizedExpectedHostname,
         match: normalizedRequestedHostname === normalizedExpectedHostname,
+        comparison: `"${normalizedRequestedHostname}" !== "${normalizedExpectedHostname}"`,
       });
       ws.close(1008, "Hostname incorrect");
       return;
     }
+
+    logger.debug("Hostname vérifié avec succès", {
+      requestedHostname: requestedServerHostname,
+      expectedHostname: hostname,
+      normalizedRequestedHostname,
+      normalizedExpectedHostname,
+    });
 
     // ============================================
     // ÉTAPE 3 : Vérifier le token localement
