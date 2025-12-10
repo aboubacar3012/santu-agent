@@ -28,9 +28,6 @@ const REQUIRED_KEYS = []; // "AGENT_TOKEN", "AGENT_HOSTNAME"
  * Charge et valide la configuration.
  *
  * @returns {{
- *   token: string,
- *   clientToken: string|null,
- *   hostname: string,
  *   logLevel: string,
  *   dockerSocketPath: string,
  *   frontendPort: number|string,
@@ -50,22 +47,13 @@ export function loadConfig() {
   }
 
   /**
-   * Token utilisé pour authentifier les connexions frontend.
-   * Si aucun jeton dédié n'est fourni, on retombe sur le jeton agent (mode simple).
-   */
-  const clientToken = process.env.AGENT_TOKEN || null;
-
-  /**
    * Construction de l'objet de configuration final.
    * Tous les accès à process.env sont regroupés ici pour unifier la logique.
    */
   return {
     // Jeton principal partagé avec le backend (si besoin futur) et utilisé par défaut côté frontend.
-    token: process.env.AGENT_TOKEN,
     // Jeton spécifique à exposer aux clients frontend (permettra un scope différent plus tard).
-    clientToken,
     // Nom lisible du serveur (utilisé dans les logs, messages, etc.).
-    hostname: process.env.AGENT_HOSTNAME,
     // Niveau de logs (error/warn/info/debug).
     logLevel: "debug",
     // Socket Docker (Unix ou éventuellement TCP).

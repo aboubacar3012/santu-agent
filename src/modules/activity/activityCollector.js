@@ -1,19 +1,26 @@
 /**
- * Action stream - Collecte les événements système en temps réel
+ * Collecteur d'événements d'activité en arrière-plan
  *
- * @module modules/activity/actions/stream
+ * Ce module collecte continuellement les événements d'activité (Docker, SSH, système)
+ * et les stocke dans Redis, même quand aucun client n'est connecté pour les lire.
+ *
+ * @module modules/activity/activityCollector
  */
 
+import { logger } from "../../shared/logger.js";
+import { storeActivityEvent, generateActivityKey } from "../../shared/redis.js";
+import { getDocker } from "../docker/manager.js";
+import { executeCommand } from "../../shared/executor.js";
 import { spawn } from "child_process";
-import { logger } from "../../../shared/logger.js";
-import { validateActivityParams } from "../validator.js";
-import { getDocker } from "../../docker/manager.js";
-import { executeCommand } from "../../../shared/executor.js";
-import {
-  getCachedActivityEventsLast7Days,
-  storeActivityEvent,
-  generateActivityKey,
-} from "../../../shared/redis.js";
+
+let dockerEventsCollector = null;
+let sshEventsCollectors = [];
+let systemEventsInterval = null;
+let isCollecting = false;
+
+let lastCPUTotals = null;
+let lastSystemEventSent = {};
+const cooldownPeriod = 10 * 60 * 1000; // 10 minutes
 
 /**
  * Crée un événement système formaté
@@ -69,7 +76,7 @@ function parseSSHLogLine(line) {
     const ip = ipMatch ? ipMatch[1] : "unknown";
     const user = userMatch ? userMatch[1] : "unknown";
 
-    logger.debug("Connexion SSH réussie détectée", {
+    logger.debug("Connexion SSH réussie détectée (collecteur)", {
       user,
       ip,
       line: line.substring(0, 100),
@@ -100,7 +107,7 @@ function parseSSHLogLine(line) {
     const ip = ipMatch ? ipMatch[1] : "unknown";
     const user = userMatch ? userMatch[1] : "unknown";
 
-    logger.debug("Échec de connexion SSH détecté", {
+    logger.debug("Échec de connexion SSH détecté (collecteur)", {
       user,
       ip,
       line: line.substring(0, 100),
@@ -129,7 +136,7 @@ function parseSSHLogLine(line) {
     const ipMatch = line.match(/from\s+([\d.]+)/i);
     const ip = ipMatch ? ipMatch[1] : "unknown";
 
-    logger.debug("Connexion SSH bloquée détectée", {
+    logger.debug("Connexion SSH bloquée détectée (collecteur)", {
       ip,
       line: line.substring(0, 100),
     });
@@ -151,9 +158,9 @@ function parseSSHLogLine(line) {
 }
 
 /**
- * Traite un événement Docker et l'envoie via le callback
+ * Traite un événement Docker et le stocke dans Redis
  */
-function processDockerEvent(event, callbacks) {
+function processDockerEvent(event) {
   try {
     const { Action, Type, Actor } = event;
 
@@ -204,165 +211,16 @@ function processDockerEvent(event, callbacks) {
         }
       );
 
-      callbacks.onStream("activity", JSON.stringify(systemEvent));
-
-      // Stocker l'événement dans Redis (en arrière-plan, ne pas bloquer)
+      // Stocker l'événement dans Redis
       const activityKey = generateActivityKey("activity:events");
       storeActivityEvent(activityKey, systemEvent).catch((error) => {
         // Erreurs de stockage Redis sont déjà loggées dans storeActivityEvent
-        // On ne bloque pas le streaming en cas d'erreur Redis
       });
     }
   } catch (error) {
     logger.debug("Erreur parsing événement Docker", {
       error: error.message,
     });
-  }
-}
-
-/**
- * Collecte les événements Docker en temps réel
- */
-async function startDockerEventsCollector(callbacks, cleanupFunctions) {
-  try {
-    const docker = getDocker();
-
-    // Démarrer le stream en temps réel depuis maintenant
-    // Note: L'historique est récupéré depuis la base de données côté frontend
-    const dockerEvents = docker.getEvents({
-      since: Math.floor(Date.now() / 1000), // Timestamp Unix en secondes
-    });
-
-    dockerEvents.on("data", (chunk) => {
-      try {
-        const event = JSON.parse(chunk.toString());
-        processDockerEvent(event, callbacks);
-      } catch (error) {
-        logger.debug("Erreur parsing événement Docker", {
-          error: error.message,
-        });
-      }
-    });
-
-    dockerEvents.on("error", (error) => {
-      logger.error("Erreur Docker events stream", { error: error.message });
-    });
-
-    cleanupFunctions.push(() => {
-      try {
-        dockerEvents.removeAllListeners();
-        dockerEvents.destroy?.();
-      } catch (error) {
-        logger.warn("Erreur lors du nettoyage Docker events", {
-          error: error.message,
-        });
-      }
-    });
-  } catch (error) {
-    logger.error("Erreur démarrage collecteur Docker", {
-      error: error.message,
-    });
-  }
-}
-
-/**
- * Collecte les événements SSH en temps réel
- */
-async function startSSHEventsCollector(callbacks, cleanupFunctions) {
-  try {
-    // Démarrer le streaming en temps réel
-    // Note: L'historique est récupéré depuis la base de données côté frontend
-    // Déterminer le fichier de log SSH selon l'OS
-    const logFiles = [
-      "/var/log/auth.log", // Debian/Ubuntu
-      "/var/log/secure", // RHEL/CentOS
-      "/var/log/syslog", // Alternative
-      "/var/log/messages", // Alternative
-    ];
-
-    const logProcesses = [];
-
-    for (const logFile of logFiles) {
-      try {
-        // Utiliser nsenter pour accéder aux logs de l'hôte depuis le conteneur
-        const command = `nsenter -t 1 -m -u -i -n -p -- sh -c 'tail -f ${logFile} 2>/dev/null || true'`;
-        const tailProcess = spawn("sh", ["-c", command], {
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-
-        let buffer = "";
-
-        tailProcess.stdout.on("data", (chunk) => {
-          buffer += chunk.toString();
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-
-          for (const line of lines) {
-            if (line.trim()) {
-              const event = parseSSHLogLine(line);
-              if (event) {
-                logger.debug("Événement SSH détecté dans le stream", {
-                  eventType: event.eventType,
-                  source: event.source,
-                  metadata: event.metadata,
-                });
-                callbacks.onStream("activity", JSON.stringify(event));
-
-                // Stocker l'événement dans Redis (en arrière-plan, ne pas bloquer)
-                const activityKey = generateActivityKey("activity:events");
-                storeActivityEvent(activityKey, event).catch((error) => {
-                  logger.warn("Erreur stockage événement SSH dans stream", {
-                    error: error.message,
-                  });
-                });
-              }
-            }
-          }
-        });
-
-        tailProcess.stderr.on("data", (chunk) => {
-          // Ignorer les erreurs de fichiers inexistants
-          const error = chunk.toString();
-          if (
-            !error.includes("No such file") &&
-            !error.includes("cannot open")
-          ) {
-            logger.debug("Erreur tail SSH logs", { error });
-          }
-        });
-
-        tailProcess.on("error", (error) => {
-          logger.debug("Erreur processus tail SSH", { error: error.message });
-        });
-
-        logProcesses.push(tailProcess);
-      } catch (error) {
-        logger.debug(`Impossible d'accéder à ${logFile}`, {
-          error: error.message,
-        });
-      }
-    }
-
-    cleanupFunctions.push(() => {
-      logProcesses.forEach((process) => {
-        try {
-          if (!process.killed) {
-            process.kill("SIGTERM");
-            setTimeout(() => {
-              if (!process.killed) {
-                process.kill("SIGKILL");
-              }
-            }, 1000);
-          }
-        } catch (error) {
-          logger.warn("Erreur nettoyage processus SSH", {
-            error: error.message,
-          });
-        }
-      });
-    });
-  } catch (error) {
-    logger.error("Erreur démarrage collecteur SSH", { error: error.message });
   }
 }
 
@@ -499,14 +357,162 @@ async function getTopCPUProcesses(limit = 3) {
 }
 
 /**
- * Collecte les événements système (CPU, mémoire, disque)
+ * Collecte les événements Docker en arrière-plan
  */
-function startSystemEventsCollector(callbacks, cleanupFunctions) {
-  let lastCPUTotals = null;
-  let lastSystemEventSent = {};
-  const cooldownPeriod = 10 * 60 * 1000; // 10 minutes
+async function startDockerEventsCollector() {
+  try {
+    const docker = getDocker();
 
-  const checkInterval = setInterval(async () => {
+    const dockerEvents = docker.getEvents({
+      since: Math.floor(Date.now() / 1000),
+    });
+
+    dockerEvents.on("data", (chunk) => {
+      try {
+        const event = JSON.parse(chunk.toString());
+        processDockerEvent(event);
+      } catch (error) {
+        logger.debug("Erreur parsing événement Docker", {
+          error: error.message,
+        });
+      }
+    });
+
+    dockerEvents.on("error", (error) => {
+      logger.error("Erreur Docker events stream", { error: error.message });
+    });
+
+    dockerEventsCollector = dockerEvents;
+  } catch (error) {
+    logger.error("Erreur démarrage collecteur Docker", {
+      error: error.message,
+    });
+  }
+}
+
+/**
+ * Collecte les événements SSH en arrière-plan
+ */
+async function startSSHEventsCollector() {
+  try {
+    const logFiles = [
+      "/var/log/auth.log", // Debian/Ubuntu
+      "/var/log/secure", // RHEL/CentOS
+      "/var/log/syslog", // Alternative
+      "/var/log/messages", // Alternative
+    ];
+
+    for (const logFile of logFiles) {
+      try {
+        // D'abord lire les dernières lignes du fichier pour capturer les événements récents
+        // Puis suivre les nouvelles lignes avec tail -f
+        const readLastLinesCommand = `nsenter -t 1 -m -u -i -n -p -- sh -c 'tail -n 100 ${logFile} 2>/dev/null || true'`;
+
+        try {
+          const { stdout } = await executeCommand(readLastLinesCommand, {
+            timeout: 5000,
+          });
+
+          if (stdout) {
+            const lines = stdout.split("\n");
+            for (const line of lines) {
+              if (line.trim() && line.toLowerCase().includes("ssh")) {
+                const event = parseSSHLogLine(line);
+                if (event) {
+                  logger.debug(
+                    "Événement SSH trouvé dans les dernières lignes",
+                    {
+                      logFile,
+                      eventType: event.eventType,
+                    }
+                  );
+                  // Stocker l'événement dans Redis
+                  const activityKey = generateActivityKey("activity:events");
+                  await storeActivityEvent(activityKey, event).catch(
+                    (error) => {
+                      logger.warn("Erreur stockage événement SSH initial", {
+                        error: error.message,
+                      });
+                    }
+                  );
+                }
+              }
+            }
+          }
+        } catch (error) {
+          logger.debug(
+            `Impossible de lire les dernières lignes de ${logFile}`,
+            {
+              error: error.message,
+            }
+          );
+        }
+
+        // Maintenant suivre les nouvelles lignes avec tail -f
+        const command = `nsenter -t 1 -m -u -i -n -p -- sh -c 'tail -f ${logFile} 2>/dev/null || true'`;
+        const tailProcess = spawn("sh", ["-c", command], {
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+
+        let buffer = "";
+
+        tailProcess.stdout.on("data", (chunk) => {
+          buffer += chunk.toString();
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (line.trim()) {
+              const event = parseSSHLogLine(line);
+              if (event) {
+                logger.debug("Nouvel événement SSH détecté", {
+                  logFile,
+                  eventType: event.eventType,
+                  metadata: event.metadata,
+                });
+                // Stocker l'événement dans Redis
+                const activityKey = generateActivityKey("activity:events");
+                storeActivityEvent(activityKey, event).catch((error) => {
+                  logger.warn("Erreur stockage événement SSH", {
+                    error: error.message,
+                  });
+                });
+              }
+            }
+          }
+        });
+
+        tailProcess.stderr.on("data", (chunk) => {
+          const error = chunk.toString();
+          if (
+            !error.includes("No such file") &&
+            !error.includes("cannot open")
+          ) {
+            logger.debug("Erreur tail SSH logs", { error });
+          }
+        });
+
+        tailProcess.on("error", (error) => {
+          logger.debug("Erreur processus tail SSH", { error: error.message });
+        });
+
+        sshEventsCollectors.push(tailProcess);
+      } catch (error) {
+        logger.debug(`Impossible d'accéder à ${logFile}`, {
+          error: error.message,
+        });
+      }
+    }
+  } catch (error) {
+    logger.error("Erreur démarrage collecteur SSH", { error: error.message });
+  }
+}
+
+/**
+ * Collecte les événements système (CPU, mémoire, disque) en arrière-plan
+ */
+function startSystemEventsCollector() {
+  systemEventsInterval = setInterval(async () => {
     try {
       const now = Date.now();
 
@@ -529,15 +535,10 @@ function startSystemEventsCollector(callbacks, cleanupFunctions) {
                 topProcesses,
               }
             );
-            callbacks.onStream("activity", JSON.stringify(event));
-
-            // Stocker l'événement dans Redis (en arrière-plan, ne pas bloquer)
             const activityKey = generateActivityKey("activity:events");
             storeActivityEvent(activityKey, event).catch((error) => {
-              // Erreurs de stockage Redis sont déjà loggées dans storeActivityEvent
-              // On ne bloque pas le streaming en cas d'erreur Redis
+              // Erreurs de stockage Redis sont déjà loggées
             });
-
             lastSystemEventSent["HIGH_CPU_USAGE"] = now;
           }
         }
@@ -558,15 +559,10 @@ function startSystemEventsCollector(callbacks, cleanupFunctions) {
               memoryUsage,
             }
           );
-          callbacks.onStream("activity", JSON.stringify(event));
-
-          // Stocker l'événement dans Redis (en arrière-plan, ne pas bloquer)
           const activityKey = generateActivityKey("activity:events");
           storeActivityEvent(activityKey, event).catch((error) => {
-            // Erreurs de stockage Redis sont déjà loggées dans storeActivityEvent
-            // On ne bloque pas le streaming en cas d'erreur Redis
+            // Erreurs de stockage Redis sont déjà loggées
           });
-
           lastSystemEventSent["HIGH_MEMORY_USAGE"] = now;
         }
       }
@@ -586,15 +582,10 @@ function startSystemEventsCollector(callbacks, cleanupFunctions) {
               diskUsage,
             }
           );
-          callbacks.onStream("activity", JSON.stringify(event));
-
-          // Stocker l'événement dans Redis (en arrière-plan, ne pas bloquer)
           const activityKey = generateActivityKey("activity:events");
           storeActivityEvent(activityKey, event).catch((error) => {
-            // Erreurs de stockage Redis sont déjà loggées dans storeActivityEvent
-            // On ne bloque pas le streaming en cas d'erreur Redis
+            // Erreurs de stockage Redis sont déjà loggées
           });
-
           lastSystemEventSent["HIGH_DISK_USAGE"] = now;
         }
       }
@@ -604,125 +595,103 @@ function startSystemEventsCollector(callbacks, cleanupFunctions) {
       });
     }
   }, 30000); // Vérifier toutes les 30 secondes
-
-  cleanupFunctions.push(() => {
-    clearInterval(checkInterval);
-  });
 }
 
 /**
- * Collecte les événements système en temps réel
- * @param {Object} params - Paramètres
- * @param {string[]} [params.sources=["docker", "ssh", "system"]] - Sources à collecter
- * @param {Object} [params.filters={}] - Filtres optionnels
- * @param {Object} callbacks - Callbacks pour le streaming
- * @param {Function} callbacks.onStream - Callback pour les données de stream
- * @returns {Promise<Object>} Informations de stream
+ * Démarre la collecte d'événements d'activité en arrière-plan
+ * @returns {Promise<void>}
  */
-export async function streamActivity(params = {}, callbacks = {}) {
+export async function startActivityCollector() {
+  if (isCollecting) {
+    logger.debug("Le collecteur d'activité est déjà en cours d'exécution");
+    return;
+  }
+
   try {
-    const validatedParams = validateActivityParams("stream", params);
-    const { sources } = validatedParams;
+    logger.info(
+      "Démarrage du collecteur d'événements d'activité en arrière-plan"
+    );
 
-    if (!callbacks.onStream) {
-      throw new Error(
-        "onStream callback est requis pour le streaming des événements"
-      );
-    }
+    // Démarrer les collecteurs pour toutes les sources
+    await startDockerEventsCollector();
+    await startSSHEventsCollector();
+    startSystemEventsCollector();
 
-    logger.debug("Début du streaming des événements système", { sources });
+    isCollecting = true;
 
-    // ÉTAPE 1 : Récupérer et envoyer les événements en cache des 7 derniers jours avant de commencer le streaming
-    try {
-      const cachedEvents = await getCachedActivityEventsLast7Days(
-        "activity:events",
-        1000
-      );
-      if (cachedEvents.length > 0) {
-        logger.debug(
-          `Envoi de ${cachedEvents.length} événements en cache (7 jours)`,
-          {
-            prefix: "activity:events",
-            eventTypes: cachedEvents
-              .map((e) => e.event?.eventType)
-              .filter(Boolean)
-              .slice(0, 5),
-          }
-        );
-
-        // Envoyer les événements en cache (du plus ancien au plus récent)
-        // Les événements sont déjà triés par timestamp dans getCachedActivityEventsLast7Days
-        let sentCount = 0;
-        for (const cachedEvent of cachedEvents) {
-          if (cachedEvent.event) {
-            try {
-              callbacks.onStream("activity", JSON.stringify(cachedEvent.event));
-              sentCount++;
-            } catch (error) {
-              logger.warn("Erreur lors de l'envoi d'un événement en cache", {
-                error: error.message,
-                eventType: cachedEvent.event.eventType,
-              });
-            }
-          }
-        }
-
-        logger.debug(
-          `Événements en cache envoyés (${sentCount}/${cachedEvents.length}), démarrage du streaming en temps réel`
-        );
-      } else {
-        logger.debug(
-          "Aucun événement en cache trouvé, démarrage direct du streaming"
-        );
-      }
-    } catch (error) {
-      logger.warn("Erreur lors de la récupération des événements en cache", {
-        error: error.message,
-        stack: error.stack,
-      });
-      // Continuer même si le cache échoue
-    }
-
-    const cleanupFunctions = [];
-
-    // Démarrer les collecteurs selon les sources demandées
-    if (sources.includes("docker")) {
-      startDockerEventsCollector(callbacks, cleanupFunctions);
-    }
-
-    if (sources.includes("ssh")) {
-      startSSHEventsCollector(callbacks, cleanupFunctions);
-    }
-
-    if (sources.includes("system")) {
-      startSystemEventsCollector(callbacks, cleanupFunctions);
-    }
-
-    return {
-      isStreaming: true,
-      initialResponse: {
-        stream: "activity",
-        mode: "activity.stream",
-        sources,
-      },
-      resource: {
-        type: "activity-stream",
-        cleanup: () => {
-          logger.debug("Nettoyage des collecteurs d'événements");
-          cleanupFunctions.forEach((cleanup) => {
-            try {
-              cleanup();
-            } catch (error) {
-              logger.warn("Erreur lors du nettoyage", { error: error.message });
-            }
-          });
-        },
-      },
-    };
+    logger.info("Collecteur d'événements d'activité démarré avec succès");
   } catch (error) {
-    logger.error("Erreur lors du streaming des événements", {
+    logger.error("Erreur lors du démarrage du collecteur d'activité", {
       error: error.message,
     });
-    throw error;
+    isCollecting = false;
   }
+}
+
+/**
+ * Arrête la collecte d'événements d'activité
+ * @returns {Promise<void>}
+ */
+export async function stopActivityCollector() {
+  if (!isCollecting) {
+    return;
+  }
+
+  try {
+    logger.info("Arrêt du collecteur d'événements d'activité");
+
+    // Arrêter Docker events
+    if (dockerEventsCollector) {
+      try {
+        dockerEventsCollector.removeAllListeners();
+        dockerEventsCollector.destroy?.();
+      } catch (error) {
+        logger.warn("Erreur lors de l'arrêt du collecteur Docker", {
+          error: error.message,
+        });
+      }
+      dockerEventsCollector = null;
+    }
+
+    // Arrêter SSH collectors
+    sshEventsCollectors.forEach((process) => {
+      try {
+        if (!process.killed) {
+          process.kill("SIGTERM");
+          setTimeout(() => {
+            if (!process.killed) {
+              process.kill("SIGKILL");
+            }
+          }, 1000);
+        }
+      } catch (error) {
+        logger.warn("Erreur lors de l'arrêt du collecteur SSH", {
+          error: error.message,
+        });
+      }
+    });
+    sshEventsCollectors = [];
+
+    // Arrêter système events
+    if (systemEventsInterval) {
+      clearInterval(systemEventsInterval);
+      systemEventsInterval = null;
+    }
+
+    isCollecting = false;
+
+    logger.info("Collecteur d'événements d'activité arrêté");
+  } catch (error) {
+    logger.error("Erreur lors de l'arrêt du collecteur d'activité", {
+      error: error.message,
+    });
+  }
+}
+
+/**
+ * Vérifie si le collecteur est actif
+ * @returns {boolean} True si le collecteur est actif
+ */
+export function isCollectorActive() {
+  return isCollecting;
 }

@@ -17,6 +17,10 @@ import { initDocker } from "./modules/docker/manager.js";
 import { getNetworkInfo } from "./modules/metadata/actions/utils.js";
 import { closeRedisConnection } from "./shared/redis.js";
 import { startLogCollector, stopLogCollector } from "./modules/haproxy/logCollector.js";
+import {
+  startActivityCollector,
+  stopActivityCollector,
+} from "./modules/activity/activityCollector.js";
 
 /**
  * Fonction principale orchestrant le cycle de vie de l'agent.
@@ -25,11 +29,13 @@ async function main() {
   try {
     // 1. Charger la configuration validée.
     const config = loadConfig();
-    
+
     // 2. Récupérer l'IP du serveur pour la vérification des tokens
     const serverIp = await getNetworkInfo();
     if (!serverIp) {
-      logger.warn("Impossible de récupérer l'IP du serveur, la vérification des tokens pourrait échouer");
+      logger.warn(
+        "Impossible de récupérer l'IP du serveur, la vérification des tokens pourrait échouer"
+      );
     }
 
     logger.info("Démarrage de l'agent ", {
@@ -50,12 +56,24 @@ async function main() {
       // Continuer même si le collecteur ne démarre pas
     }
 
-    // 5. Démarrer le serveur WebSocket pour les connexions frontend.
-    const frontendServer = createFrontendServer({
+    // 5. Démarrer le collecteur d'événements d'activité en arrière-plan
+    try {
+      await startActivityCollector();
+    } catch (error) {
+      logger.warn(
+        "Impossible de démarrer le collecteur d'événements d'activité",
+        {
+          error: error.message,
+        }
+      );
+      // Continuer même si le collecteur ne démarre pas
+    }
+
+    // 6. Démarrer le serveur WebSocket pour les connexions frontend.
+    // Note: createFrontendServer est maintenant async car il récupère le hostname via nsenter
+    const frontendServer = await createFrontendServer({
       port: config.frontendPort,
       host: config.frontendHost,
-      token: config.clientToken,
-      hostname: config.hostname,
       serverIp: serverIp || null,
       healthcheckPath: config.healthcheckPath,
     });
@@ -75,6 +93,15 @@ async function main() {
         await stopLogCollector();
       } catch (error) {
         logger.error("Erreur lors de l'arrêt du collecteur de logs", {
+          error: error.message,
+        });
+      }
+
+      // Arrêter le collecteur d'événements d'activité
+      try {
+        await stopActivityCollector();
+      } catch (error) {
+        logger.error("Erreur lors de l'arrêt du collecteur d'activité", {
           error: error.message,
         });
       }

@@ -4,8 +4,52 @@ import { logger } from "../shared/logger.js";
 import { handleMessage } from "./handlers.js";
 import { createError } from "../shared/messages.js";
 import { verifyToken } from "./auth.js";
+import { executeCommand } from "../shared/executor.js";
 
 const DEFAULT_HEALTHCHECK_PATH = "/healthcheck";
+
+/**
+ * Exécute une commande sur l'hôte via nsenter
+ * @param {string} command - Commande à exécuter
+ * @param {Object} [options] - Options d'exécution
+ * @returns {Promise<Object>} Résultat de l'exécution
+ */
+async function executeHostCommand(command, options = {}) {
+  const escapedCommand = command.replace(/'/g, "'\"'\"'");
+  const nsenterCommand = `nsenter -t 1 -m -u -i -n -p -- sh -c '${escapedCommand}'`;
+
+  return await executeCommand(nsenterCommand, {
+    timeout: options.timeout || 5000,
+    maxBuffer: options.maxBuffer || 10 * 1024 * 1024,
+  });
+}
+
+/**
+ * Récupère le hostname de l'hôte via nsenter
+ * @returns {Promise<string|null>} Hostname ou null en cas d'erreur
+ */
+async function getHostname() {
+  try {
+    // Utiliser nsenter pour exécuter hostname sur l'hôte depuis le conteneur
+    const { stdout } = await executeHostCommand("hostname", {
+      timeout: 5000,
+    });
+
+    if (stdout && stdout.trim()) {
+      const hostname = stdout.trim();
+      logger.debug(`Hostname récupéré via nsenter: ${hostname}`);
+      return hostname;
+    }
+
+    logger.warn("Impossible de récupérer le hostname via nsenter");
+    return null;
+  } catch (error) {
+    logger.error("Erreur lors de la récupération du hostname via nsenter", {
+      error: error.message,
+    });
+    return null;
+  }
+}
 
 /**
  * Serveur WebSocket frontend.
@@ -19,17 +63,24 @@ const DEFAULT_HEALTHCHECK_PATH = "/healthcheck";
  * @param {Object} options - Options de configuration
  * @param {number} options.port - Port d'écoute
  * @param {string} options.host - Interface réseau d'écoute
- * @param {string|null} options.token - Jeton requis pour l'authentification
  * @returns {{ server: import('http').Server, wss: WebSocketServer, close: () => Promise<void> }}
  */
-export function createFrontendServer({
+export async function createFrontendServer({
   port,
   host,
-  token,
-  hostname,
   serverIp,
   healthcheckPath = DEFAULT_HEALTHCHECK_PATH,
 }) {
+  // Récupérer le hostname de l'hôte via nsenter
+  const hostname = await getHostname();
+  if (!hostname) {
+    logger.warn(
+      "Impossible de récupérer le hostname, certaines vérifications seront désactivées"
+    );
+  } else {
+    logger.info("Hostname récupéré pour les vérifications", { hostname });
+  }
+
   const normalizedHealthcheckPath = normalizeHealthcheckPath(healthcheckPath);
   const server = http.createServer();
   const wss = new WebSocketServer({
@@ -82,18 +133,55 @@ export function createFrontendServer({
     // ============================================
     // ÉTAPE 2 : Vérifier le hostname
     // ============================================
-    // Le hostname doit correspondre exactement au hostname configuré de l'agent.
+    // Le hostname doit être présent dans l'URL ET correspondre au hostname configuré de l'agent.
     // Cela empêche un client de se connecter à un agent qui gère un autre serveur.
-    if (!requestedServerHostname || requestedServerHostname !== hostname) {
+
+    // Vérifier d'abord que le hostname est présent dans l'URL
+    if (
+      !requestedServerHostname ||
+      requestedServerHostname.trim().length === 0
+    ) {
+      logger.warn("Tentative de connexion sans hostname dans l'URL", {
+        remoteAddress: req.socket.remoteAddress,
+      });
+      ws.close(1008, "Hostname requis dans l'URL");
+      return;
+    }
+
+    // Normaliser les hostnames pour la comparaison (trim et lowercase)
+    const normalizedRequestedHostname = requestedServerHostname
+      .trim()
+      .toLowerCase();
+    const normalizedExpectedHostname = hostname
+      ? hostname.trim().toLowerCase()
+      : null;
+
+    // Vérifier que le hostname correspond à celui de l'hôte
+    if (!normalizedExpectedHostname) {
       logger.warn(
-        "Tentative de connexion sans hostname spécifié ou hostname incorrect",
+        "Hostname de l'hôte non disponible, impossible de vérifier la correspondance",
         {
           remoteAddress: req.socket.remoteAddress,
           requestedHostname: requestedServerHostname,
-          expectedHostname: hostname,
         }
       );
-      ws.close(1008, "Hostname requis");
+      ws.close(
+        1008,
+        "Configuration serveur invalide (hostname non disponible)"
+      );
+      return;
+    }
+
+    if (normalizedRequestedHostname !== normalizedExpectedHostname) {
+      logger.warn("Tentative de connexion avec hostname incorrect", {
+        remoteAddress: req.socket.remoteAddress,
+        requestedHostname: requestedServerHostname,
+        normalizedRequestedHostname,
+        expectedHostname: hostname,
+        normalizedExpectedHostname,
+        match: normalizedRequestedHostname === normalizedExpectedHostname,
+      });
+      ws.close(1008, "Hostname incorrect");
       return;
     }
 
