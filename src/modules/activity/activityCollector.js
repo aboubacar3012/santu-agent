@@ -450,7 +450,7 @@ async function startDockerEventsCollector() {
     // Faire un premier check immédiatement
     await checkDockerEvents();
 
-    // Ensuite, vérifier périodiquement toutes les 30 secondes (comme dans le Python)
+    // Ensuite, vérifier périodiquement toutes les 10 secondes (comme dans le Python)
     dockerEventsInterval = setInterval(async () => {
       await checkDockerEvents();
     }, COLLECTION_INTERVAL);
@@ -709,7 +709,7 @@ function startSystemEventsCollector() {
         stack: error.stack,
       });
     }
-  }, 30000); // Vérifier toutes les 30 secondes
+  }, 10000); // Vérifier toutes les 10 secondes
 
   logger.debug("Collecteur d'événements système démarré avec succès");
 }
