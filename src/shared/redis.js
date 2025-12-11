@@ -104,7 +104,7 @@ async function getRedisClient() {
  * @param {string} key - Clé Redis (ex: "haproxy:logs:2025-12-10")
  * @param {string} logLine - Ligne de log à stocker
  * @param {number} ttlSeconds - TTL en secondes (défaut: 24h = 86400)
- * @param {number} maxLogs - Nombre maximum de logs à garder par jour (défaut: 10000)
+ * @param {number} maxLogs - Nombre maximum de logs à garder par jour (défaut: 5000)
  * @returns {Promise<boolean>} True si stocké avec succès, false sinon
  */
 /**
@@ -116,7 +116,7 @@ function hashLogLine(logLine) {
   if (!logLine || typeof logLine !== "string") {
     return "";
   }
-  
+
   // Utiliser un hash simple basé sur le contenu du log
   // Pour les logs HAProxy, on peut utiliser le JSON s'il existe
   try {
@@ -136,7 +136,7 @@ export async function storeLog(
   key,
   logLine,
   ttlSeconds = 86400,
-  maxLogs = 10000
+  maxLogs = 5000
 ) {
   try {
     const client = await getRedisClient();
@@ -225,10 +225,10 @@ export async function storeLog(
 /**
  * Récupère les logs en cache depuis Redis
  * @param {string} key - Clé Redis (ex: "haproxy:logs:2025-12-10")
- * @param {number} limit - Nombre maximum de logs à récupérer (défaut: 10000)
+ * @param {number} limit - Nombre maximum de logs à récupérer (défaut: 5000)
  * @returns {Promise<Array<{timestamp: number, log: string}>>} Liste des logs en cache (du plus ancien au plus récent)
  */
-export async function getCachedLogs(key, limit = 10000) {
+export async function getCachedLogs(key, limit = 5000) {
   try {
     const client = await getRedisClient();
     if (!client) {
@@ -277,10 +277,10 @@ export async function getCachedLogs(key, limit = 10000) {
 /**
  * Récupère les logs en cache des dernières 24h depuis Redis
  * @param {string} prefix - Préfixe de la clé (ex: "haproxy:logs")
- * @param {number} limitPerDay - Nombre maximum de logs par jour (défaut: 10000)
+ * @param {number} limitPerDay - Nombre maximum de logs par jour (défaut: 5000)
  * @returns {Promise<Array<{timestamp: number, log: string}>>} Liste des logs en cache (du plus ancien au plus récent)
  */
-export async function getCachedLogsLast24h(prefix, limitPerDay = 10000) {
+export async function getCachedLogsLast24h(prefix, limitPerDay = 5000) {
   try {
     const client = await getRedisClient();
     if (!client) {
@@ -403,14 +403,14 @@ function hashActivityEvent(event) {
  * @param {string} key - Clé Redis (ex: "activity:events:2025-12-10")
  * @param {Object} event - Événement à stocker
  * @param {number} ttlSeconds - TTL en secondes (défaut: 7 jours = 604800)
- * @param {number} maxEvents - Nombre maximum d'événements à garder par jour (défaut: 10000)
+ * @param {number} maxEvents - Nombre maximum d'événements à garder par jour (défaut: 5000)
  * @returns {Promise<boolean>} True si stocké avec succès, false sinon
  */
 export async function storeActivityEvent(
   key,
   event,
   ttlSeconds = 604800, // 7 jours
-  maxEvents = 10000
+  maxEvents = 5000
 ) {
   try {
     const client = await getRedisClient();
@@ -505,10 +505,10 @@ export async function storeActivityEvent(
 /**
  * Récupère les événements d'activité en cache depuis Redis
  * @param {string} key - Clé Redis (ex: "activity:events:2025-12-10")
- * @param {number} limit - Nombre maximum d'événements à récupérer (défaut: 10000)
+ * @param {number} limit - Nombre maximum d'événements à récupérer (défaut: 5000)
  * @returns {Promise<Array<{timestamp: number, event: Object}>>} Liste des événements en cache (du plus ancien au plus récent)
  */
-export async function getCachedActivityEvents(key, limit = 10000) {
+export async function getCachedActivityEvents(key, limit = 5000) {
   try {
     const client = await getRedisClient();
     if (!client) {
@@ -557,12 +557,12 @@ export async function getCachedActivityEvents(key, limit = 10000) {
 /**
  * Récupère les événements d'activité en cache des 7 derniers jours depuis Redis
  * @param {string} prefix - Préfixe de la clé (ex: "activity:events")
- * @param {number} limitPerDay - Nombre maximum d'événements par jour (défaut: 10000)
+ * @param {number} limitPerDay - Nombre maximum d'événements par jour (défaut: 5000)
  * @returns {Promise<Array<{timestamp: number, event: Object}>>} Liste des événements en cache (du plus ancien au plus récent)
  */
 export async function getCachedActivityEventsLast7Days(
   prefix,
-  limitPerDay = 10000
+  limitPerDay = 5000
 ) {
   try {
     const client = await getRedisClient();

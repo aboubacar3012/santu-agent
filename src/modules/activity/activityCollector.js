@@ -388,7 +388,7 @@ async function checkDockerEvents() {
     const command = `nsenter -t 1 -m -u -i -n -p -- sh -c '${escapedCommand}'`;
 
     const { stdout, stderr, error } = await executeCommand(command, {
-      timeout: 10000,
+      timeout: 5000,
     });
 
     if (error) {
@@ -709,7 +709,7 @@ function startSystemEventsCollector() {
         stack: error.stack,
       });
     }
-  }, 10000); // Vérifier toutes les 10 secondes
+  }, 5000); // Vérifier toutes les 10 secondes
 
   logger.debug("Collecteur d'événements système démarré avec succès");
 }
