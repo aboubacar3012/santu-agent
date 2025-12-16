@@ -200,14 +200,6 @@ export async function verifyRole(userId, allowedRoles, options = {}) {
       "Content-Type": "application/json",
     };
 
-    // Ajouter le token d'authentification si fourni (via options ou variable d'environnement)
-    const authToken = options.authToken || process.env.API_AUTH_TOKEN;
-    if (authToken) {
-      headers["Authorization"] = `Bearer ${authToken}`;
-      // Note: L'API backend utilise better-auth qui attend probablement un cookie de session
-      // Si nécessaire, vous devrez peut-être adapter cette partie selon votre système d'authentification
-    }
-
     // Faire l'appel HTTP à l'API backend
     const response = await fetch(apiUrl, {
       method: "GET",
@@ -251,10 +243,6 @@ export async function verifyRole(userId, allowedRoles, options = {}) {
 
     // Vérifier la structure de la réponse
     if (!data.success || !data.data || !data.data.role) {
-      logger.warn("Réponse API invalide (structure)", {
-        data,
-        userId,
-      });
       return {
         authorized: false,
         error: "Réponse API invalide",
@@ -281,7 +269,9 @@ export async function verifyRole(userId, allowedRoles, options = {}) {
       return {
         authorized: false,
         role: userRole,
-        error: `Accès refusé. Rôle requis: ${allowedRoles.join(", ")}. Rôle actuel: ${userRole}`,
+        error: `Accès refusé. Rôle requis: ${allowedRoles.join(
+          ", "
+        )}. Rôle actuel: ${userRole}`,
       };
     }
 
