@@ -18,15 +18,15 @@ import { requireRole } from "../../../websocket/auth.js";
  */
 export async function listUfwRules(params = {}, callbacks = {}) {
   try {
-    // Vérifier les permissions : seuls ADMIN et OWNER peuvent lister les règles UFW
+    // Vérifier les permissions : seuls ADMIN et OWNER et EDITOR et USER peuvent lister les règles UFW
     const userId = callbacks?.context?.userId;
     const companyId = callbacks?.context?.companyId;
 
     await requireRole(
       userId,
       companyId,
-      ["ADMIN", "OWNER"],
-      "lister les règles UFW"
+      ["ADMIN", "OWNER", "EDITOR", "USER"],
+      "lister les règles UFW personnalisées"
     );
 
     validateUfwParams("list", params);
