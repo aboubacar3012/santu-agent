@@ -30,13 +30,20 @@ export async function applyUfwRules(params = {}, callbacks = {}) {
   try {
     // Vérifier les permissions : seuls ADMIN et OWNER peuvent appliquer des règles UFW
     const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
     if (!userId) {
       logger.warn("Tentative d'application de règles UFW sans userId");
       throw new Error("Authentification requise pour appliquer des règles UFW");
     }
+    if (!companyId) {
+      logger.warn("Tentative d'application de règles UFW sans companyId");
+      throw new Error("CompanyId requis pour appliquer des règles UFW");
+    }
 
     // Vérifier que l'utilisateur a un des rôles autorisés
-    const roleCheck = await verifyRole(userId, ["ADMIN", "OWNER"]);
+    const roleCheck = await verifyRole(userId, ["ADMIN", "OWNER"], {
+      companyId,
+    });
     if (!roleCheck.authorized) {
       logger.warn("Tentative d'application de règles UFW sans autorisation", {
         userId,

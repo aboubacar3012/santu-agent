@@ -34,13 +34,16 @@ const API_BASE_URL = process.env.API_BASE_URL || "https://devoups.elyamaje.com";
  * @param {string} token - Token à vérifier (reçu dans l'URL WebSocket)
  * @param {string} expectedHostname - Hostname attendu (celui de l'agent)
  * @param {string} expectedServerIp - IP attendue (celle du serveur)
- * @returns {{valid: boolean, userId?: string, email?: string, error?: string}}
+ * @returns {{valid: boolean, userId?: string, companyId?: string, error?: string}}
  *   - valid: true si le token est valide, false sinon
+ *   - userId: ID de l'utilisateur extrait du token (si valide)
+ *   - companyId: ID de l'entreprise extrait du token (si valide)
  *   - error: Message d'erreur (si invalide)
  *
  * @example
  * const result = verifyToken("<base64>", "server-prod", "192.168.1.100");
  * if (!result.valid) console.error(result.error);
+ * else console.log("User:", result.userId, "Company:", result.companyId);
  */
 export function verifyToken(token, expectedHostname, expectedServerIp) {
   // Vérification basique : le token doit être fourni
@@ -72,6 +75,7 @@ export function verifyToken(token, expectedHostname, expectedServerIp) {
     const tokenHostname = payload.hostname;
     const tokenServerIp = payload.serverIp;
     const tokenUserId = payload.userId; // userId inclus dans le token
+    const tokenCompanyId = payload.companyId; // companyId inclus dans le token
     const ts = payload.ts; // timestamp en ms
 
     if (!tokenHostname || !tokenServerIp || !ts) {
@@ -114,11 +118,13 @@ export function verifyToken(token, expectedHostname, expectedServerIp) {
       hostname: tokenHostname,
       serverIp: tokenServerIp,
       userId: tokenUserId,
+      companyId: tokenCompanyId,
     });
 
     return {
       valid: true,
       userId: tokenUserId, // Retourner le userId extrait du token
+      companyId: tokenCompanyId, // Retourner le companyId extrait du token
     };
   } catch (error) {
     logger.error("Erreur lors de la vérification du token", {
@@ -135,31 +141,23 @@ export function verifyToken(token, expectedHostname, expectedServerIp) {
  * Cette fonction fait un appel HTTP à l'API backend pour récupérer le rôle d'un utilisateur
  * et vérifie si ce rôle est présent dans la liste des rôles autorisés.
  *
- * Note: L'API backend nécessite une authentification. Si vous avez un token d'API,
- * vous pouvez le passer via la variable d'environnement API_AUTH_TOKEN ou directement
- * dans les headers de la requête.
- *
  * @param {string} userId - ID de l'utilisateur dont on veut vérifier le rôle
  * @param {string[]} allowedRoles - Tableau des rôles autorisés (ex: ["ADMIN", "OWNER", "EDITOR"])
  * @param {Object} [options] - Options supplémentaires
- * @param {string} [options.authToken] - Token d'authentification optionnel pour l'API (sinon utilise API_AUTH_TOKEN depuis l'environnement)
+ * @param {string} [options.companyId] - ID de l'entreprise (requis pour vérifier le rôle dans une entreprise spécifique)
  * @returns {Promise<{authorized: boolean, role?: string, error?: string}>}
  *   - authorized: true si l'utilisateur a un des rôles autorisés, false sinon
  *   - role: Le rôle de l'utilisateur (si récupéré avec succès)
  *   - error: Message d'erreur (si la vérification échoue)
  *
  * @example
- * // Utilisation basique
- * const result = await verifyRole("user-123", ["ADMIN", "OWNER"]);
+ * // Utilisation avec companyId
+ * const result = await verifyRole("user-123", ["ADMIN", "OWNER"], {
+ *   companyId: "company-123"
+ * });
  * if (!result.authorized) {
  *   console.error("Accès refusé:", result.error);
  * }
- *
- * @example
- * // Avec token d'authentification explicite
- * const result = await verifyRole("user-123", ["ADMIN", "OWNER"], {
- *   authToken: "your-api-token"
- * });
  */
 export async function verifyRole(userId, allowedRoles, options = {}) {
   // Vérifications préliminaires
@@ -171,7 +169,11 @@ export async function verifyRole(userId, allowedRoles, options = {}) {
     };
   }
 
-  if (!allowedRoles || !Array.isArray(allowedRoles) || allowedRoles.length === 0) {
+  if (
+    !allowedRoles ||
+    !Array.isArray(allowedRoles) ||
+    allowedRoles.length === 0
+  ) {
     logger.warn("verifyRole appelé sans rôles autorisés", {
       allowedRoles,
     });
@@ -181,18 +183,32 @@ export async function verifyRole(userId, allowedRoles, options = {}) {
     };
   }
 
+  // Vérifier que companyId est fourni
+  const companyId = options.companyId;
+  if (!companyId) {
+    logger.warn("verifyRole appelé sans companyId");
+    return {
+      authorized: false,
+      error: "companyId requis pour la vérification du rôle",
+    };
+  }
+
   logger.debug("Vérification du rôle de l'utilisateur", {
     userId,
+    companyId,
     allowedRoles,
   });
 
   try {
-    // Construire l'URL de l'API pour récupérer le rôle
-    const apiUrl = `${API_BASE_URL}/api/users/${userId}/role`;
+    // Construire l'URL de l'API pour récupérer le rôle avec le companyId en query parameter
+    const apiUrl = `${API_BASE_URL}/api/users/${userId}/role?companyId=${encodeURIComponent(
+      companyId
+    )}`;
 
     logger.debug("Appel API pour récupérer le rôle", {
       apiUrl,
       userId,
+      companyId,
     });
 
     // Préparer les headers avec authentification si disponible

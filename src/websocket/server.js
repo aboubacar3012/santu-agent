@@ -244,16 +244,19 @@ export async function createFrontendServer({
         return;
       }
 
-      // Token valide : stocker le userId dans le contexte de la connexion WebSocket
+      // Token valide : stocker le userId et companyId dans le contexte de la connexion WebSocket
       // pour pouvoir l'utiliser dans les actions pour vérifier les rôles
       const userId = verificationResult.userId;
+      const companyId = verificationResult.companyId;
       ws.userId = userId; // Stocker le userId dans l'objet WebSocket
+      ws.companyId = companyId; // Stocker le companyId dans l'objet WebSocket
 
       // Token valide : logger les informations pour traçabilité
       logger.info("Token vérifié avec succès localement", {
         remoteAddress: req.socket.remoteAddress,
         requestedServerHostname,
         userId,
+        companyId,
       });
     } else if (token) {
       // Mode fallback : si un token statique est configuré dans l'environnement
@@ -268,7 +271,7 @@ export async function createFrontendServer({
     } else {
       // Si aucun token n'est fourni ET aucun token statique n'est configuré,
       // on accepte la connexion (mode développement sans authentification)
-      // Dans ce cas, userId sera undefined, ce qui empêchera les actions nécessitant une authentification
+      // Dans ce cas, userId et companyId seront undefined, ce qui empêchera les actions nécessitant une authentification
       logger.warn(
         "Connexion acceptée sans authentification (mode développement)",
         {
@@ -277,6 +280,7 @@ export async function createFrontendServer({
         }
       );
       ws.userId = undefined; // Pas de userId en mode développement
+      ws.companyId = undefined; // Pas de companyId en mode développement
     }
 
     // ============================================
@@ -427,9 +431,10 @@ export async function createFrontendServer({
           (requestId, resource) => {
             registerResource(requestId, resource);
           },
-          // Contexte de la connexion (userId, etc.)
+          // Contexte de la connexion (userId, companyId, etc.)
           {
             userId: ws.userId,
+            companyId: ws.companyId,
           }
         );
       } catch (error) {
