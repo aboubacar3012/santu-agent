@@ -7,6 +7,7 @@
 import { getDocker } from "../manager.js";
 import { logger } from "../../../shared/logger.js";
 import { validateDockerParams } from "../validator.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Démarre un conteneur Docker
@@ -17,6 +18,17 @@ import { validateDockerParams } from "../validator.js";
  */
 export async function startContainer(params, callbacks = {}) {
   try {
+    // Vérifier les permissions : ADMIN, OWNER et EDITOR peuvent démarrer un conteneur
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER", "EDITOR"],
+      "démarrer un conteneur Docker"
+    );
+
     const docker = getDocker();
     const { container } = validateDockerParams("start", params);
     const containerObj = docker.getContainer(container);

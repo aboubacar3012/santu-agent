@@ -7,6 +7,7 @@
 import { getDocker } from "../manager.js";
 import { logger } from "../../../shared/logger.js";
 import { validateDockerParams } from "../validator.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Récupère les logs d'un conteneur Docker
@@ -20,6 +21,17 @@ import { validateDockerParams } from "../validator.js";
  */
 export async function getContainerLogs(params, callbacks = {}) {
   try {
+    // Vérifier les permissions : ADMIN, OWNER, EDITOR et USER peuvent voir les logs
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER", "EDITOR", "USER"],
+      "consulter les logs d'un conteneur Docker"
+    );
+
     const docker = getDocker();
     const { container, tail, follow } = validateDockerParams("logs", params);
     const containerObj = docker.getContainer(container);

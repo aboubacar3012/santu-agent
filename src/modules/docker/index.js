@@ -14,6 +14,7 @@ import { restartContainer } from "./actions/restart.js";
 import { getContainerLogs } from "./actions/logs.js";
 import { getContainerStats } from "./actions/stats.js";
 import { execContainer } from "./actions/exec.js";
+import { removeContainer } from "./actions/remove.js";
 import * as validator from "./validator.js";
 
 // Mapping des noms d'actions vers les fonctions
@@ -26,6 +27,7 @@ const actions = {
   logs: getContainerLogs,
   stats: getContainerStats,
   exec: execContainer,
+  remove: removeContainer,
 };
 
 export { actions, validator };

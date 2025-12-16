@@ -8,6 +8,7 @@ import { getDocker } from "../manager.js";
 import { logger } from "../../../shared/logger.js";
 import { validateDockerParams } from "../validator.js";
 import { calculateCpuPercent } from "./utils.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Récupère les statistiques d'un conteneur Docker
@@ -20,6 +21,17 @@ import { calculateCpuPercent } from "./utils.js";
  */
 export async function getContainerStats(params, callbacks = {}) {
   try {
+    // Vérifier les permissions : ADMIN, OWNER, EDITOR et USER peuvent voir les statistiques
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER", "EDITOR", "USER"],
+      "consulter les statistiques d'un conteneur Docker"
+    );
+
     const docker = getDocker();
     const { container, stream } = validateDockerParams("stats", params);
     const containerObj = docker.getContainer(container);

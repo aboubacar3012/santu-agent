@@ -11,6 +11,7 @@ import {
   fetchContainerStatsSnapshot,
   formatResourceUsage,
 } from "./utils.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Liste les conteneurs Docker
@@ -21,6 +22,17 @@ import {
  */
 export async function listContainers(params = {}, callbacks = {}) {
   try {
+    // Vérifier les permissions : ADMIN, OWNER, EDITOR et USER peuvent lister les conteneurs
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER", "EDITOR", "USER"],
+      "lister les conteneurs Docker"
+    );
+
     const docker = getDocker();
     const { all = true } = validateDockerParams("list", params);
     const containers = await docker.listContainers({ all });

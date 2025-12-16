@@ -18,6 +18,17 @@ import { validateDockerParams } from "../validator.js";
  */
 export async function execContainer(params, callbacks = {}) {
   try {
+    // Vérifier les permissions : seuls ADMIN et OWNER peuvent exécuter des commandes dans un conteneur
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER"],
+      "exécuter une commande dans un conteneur Docker"
+    );
+
     const docker = getDocker();
     const { container, command } = validateDockerParams("exec", params);
     const containerObj = docker.getContainer(container);

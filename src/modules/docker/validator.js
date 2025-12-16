@@ -19,6 +19,7 @@ const ALLOWED_DOCKER_ACTIONS = [
   "logs",
   "stats",
   "exec",
+  "remove",
 ];
 
 /**
@@ -84,6 +85,7 @@ export function validateParams(action, params) {
     case "restart":
     case "logs":
     case "stats":
+    case "remove":
       if (!params.container) {
         throw new Error("Le paramètre 'container' est requis");
       }
@@ -95,6 +97,9 @@ export function validateParams(action, params) {
         }),
         ...(action === "stats" && {
           stream: params.stream === true || params.stream === "true",
+        }),
+        ...(action === "remove" && {
+          force: params.force === true || params.force === "true",
         }),
       };
     case "exec":
