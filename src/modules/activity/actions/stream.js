@@ -14,6 +14,7 @@ import {
   storeActivityEvent,
   generateActivityKey,
 } from "../../../shared/redis.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Crée un événement système formaté
@@ -611,6 +612,17 @@ function startSystemEventsCollector(callbacks, cleanupFunctions) {
  */
 export async function streamActivity(params = {}, callbacks = {}) {
   try {
+    // Vérifier les permissions : seuls ADMIN et OWNER peuvent streaming des événements système
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER", "EDITOR", ""],
+      "streaming des événements système"
+    );
+
     const validatedParams = validateActivityParams("stream", params);
     const { sources } = validatedParams;
 

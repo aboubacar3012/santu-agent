@@ -8,6 +8,7 @@ import { logger } from "../../../shared/logger.js";
 import { validateUfwParams } from "../validator.js";
 import { executeCommand } from "../../../shared/executor.js";
 import { extractUfwStatus, parseUfwStatusLine } from "./utils.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Liste toutes les règles UFW
@@ -17,6 +18,17 @@ import { extractUfwStatus, parseUfwStatusLine } from "./utils.js";
  */
 export async function listUfwRules(params = {}, callbacks = {}) {
   try {
+    // Vérifier les permissions : seuls ADMIN et OWNER peuvent lister les règles UFW
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER"],
+      "lister les règles UFW"
+    );
+
     validateUfwParams("list", params);
 
     logger.debug("Début de la récupération des règles UFW");

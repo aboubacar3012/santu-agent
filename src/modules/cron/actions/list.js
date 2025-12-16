@@ -7,6 +7,7 @@
 import { logger } from "../../../shared/logger.js";
 import { validateCronParams } from "../validator.js";
 import { executeHostCommand } from "./utils.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Parse un fichier cron personnalisé créé via add-cron
@@ -259,6 +260,17 @@ async function getCustomCronJobs() {
  */
 export async function listCronJobs(params = {}, callbacks = {}) {
   try {
+    // Vérifier les permissions : seuls ADMIN et OWNER et EDITOR et USER peuvent lister les tâches cron
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER", "EDITOR", "USER"],
+      "lister les tâches cron personnalisées"
+    );
+
     validateCronParams("list", params);
 
     logger.info(

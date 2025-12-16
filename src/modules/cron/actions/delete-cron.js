@@ -7,6 +7,7 @@
 import { logger } from "../../../shared/logger.js";
 import { validateCronParams } from "../validator.js";
 import { executeHostCommand, hostFileExists } from "./utils.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Génère un nom de fichier slug à partir d'un nom de tâche
@@ -36,6 +37,17 @@ function generateFileName(taskName) {
  */
 export async function deleteCronJob(params = {}, callbacks = {}) {
   try {
+    // Vérifier les permissions : seuls ADMIN et OWNER peuvent supprimer des tâches cron
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER"],
+      "supprimer une tâche cron"
+    );
+
     // Valider les paramètres
     const validatedParams = validateCronParams("delete-cron", params);
     const { task_name } = validatedParams;

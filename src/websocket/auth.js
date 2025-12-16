@@ -162,7 +162,6 @@ export function verifyToken(token, expectedHostname, expectedServerIp) {
 export async function verifyRole(userId, allowedRoles, options = {}) {
   // Vérifications préliminaires
   if (!userId) {
-    logger.warn("verifyRole appelé sans userId");
     return {
       authorized: false,
       error: "userId requis pour la vérification du rôle",
@@ -267,27 +266,14 @@ export async function verifyRole(userId, allowedRoles, options = {}) {
 
     const userRole = data.data.role;
 
-    logger.debug("Rôle récupéré avec succès", {
-      userId,
-      userRole,
-      allowedRoles,
-    });
-
     // Vérifier si le rôle de l'utilisateur est dans la liste des rôles autorisés
     const isAuthorized = allowedRoles.includes(userRole);
 
     if (!isAuthorized) {
-      logger.warn("Accès refusé: rôle non autorisé", {
-        userId,
-        userRole,
-        allowedRoles,
-      });
       return {
         authorized: false,
         role: userRole,
-        error: `Accès refusé. Rôle requis: ${allowedRoles.join(
-          ", "
-        )}. Rôle actuel: ${userRole}`,
+        error: `Accès refusé. Vous n'avez pas les permissions requises pour cette action.`,
       };
     }
 
@@ -323,4 +309,66 @@ export async function verifyRole(userId, allowedRoles, options = {}) {
       error: `Erreur lors de la vérification du rôle: ${error.message}`,
     };
   }
+}
+
+/**
+ * Vérifie que l'utilisateur a les permissions requises pour une action
+ *
+ * Cette fonction est un wrapper autour de `verifyRole` qui :
+ * - Vérifie que userId et companyId sont fournis
+ * - Appelle verifyRole pour vérifier les permissions
+ * - Lance une erreur si l'utilisateur n'a pas les permissions requises
+ *
+ * @param {string} userId - ID de l'utilisateur
+ * @param {string} companyId - ID de l'entreprise
+ * @param {string[]} allowedRoles - Liste des rôles autorisés (ex: ["ADMIN", "OWNER"])
+ * @param {string} [actionName] - Nom de l'action pour les messages d'erreur (optionnel)
+ * @returns {Promise<void>} Ne retourne rien si l'utilisateur est autorisé, lance une erreur sinon
+ * @throws {Error} Si l'utilisateur n'a pas les permissions requises
+ *
+ * @example
+ * // Dans une action
+ * await requireRole(userId, companyId, ["ADMIN", "OWNER"], "appliquer des règles UFW");
+ */
+export async function requireRole(
+  userId,
+  companyId,
+  allowedRoles,
+  actionName = "effectuer cette action"
+) {
+  // Vérifier que userId est fourni
+  if (!userId) {
+    throw new Error(`Authentification requise pour ${actionName}`);
+  }
+
+  // Vérifier que companyId est fourni
+  if (!companyId) {
+    throw new Error(`CompanyId requis pour ${actionName}`);
+  }
+
+  // Vérifier que allowedRoles est fourni et non vide
+  if (
+    !allowedRoles ||
+    !Array.isArray(allowedRoles) ||
+    allowedRoles.length === 0
+  ) {
+    throw new Error("Liste de rôles autorisés requise");
+  }
+
+  // Vérifier les permissions via l'API
+  const roleCheck = await verifyRole(userId, allowedRoles, {
+    companyId,
+  });
+
+  // Si l'utilisateur n'est pas autorisé, lancer une erreur
+  if (!roleCheck.authorized) {
+    throw new Error(
+      roleCheck.error ||
+        `Vous n'avez pas les permissions requises pour ${actionName}. Rôles autorisés: ${allowedRoles.join(
+          ", "
+        )}`
+    );
+  }
+
+  // Si tout est OK, la fonction retourne sans erreur
 }
