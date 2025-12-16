@@ -244,10 +244,16 @@ export async function createFrontendServer({
         return;
       }
 
+      // Token valide : stocker le userId dans le contexte de la connexion WebSocket
+      // pour pouvoir l'utiliser dans les actions pour vérifier les rôles
+      const userId = verificationResult.userId;
+      ws.userId = userId; // Stocker le userId dans l'objet WebSocket
+
       // Token valide : logger les informations pour traçabilité
       logger.info("Token vérifié avec succès localement", {
         remoteAddress: req.socket.remoteAddress,
         requestedServerHostname,
+        userId,
       });
     } else if (token) {
       // Mode fallback : si un token statique est configuré dans l'environnement
@@ -259,9 +265,19 @@ export async function createFrontendServer({
       });
       ws.close(1008, "Token requis");
       return;
+    } else {
+      // Si aucun token n'est fourni ET aucun token statique n'est configuré,
+      // on accepte la connexion (mode développement sans authentification)
+      // Dans ce cas, userId sera undefined, ce qui empêchera les actions nécessitant une authentification
+      logger.warn(
+        "Connexion acceptée sans authentification (mode développement)",
+        {
+          remoteAddress: req.socket.remoteAddress,
+          requestedServerHostname,
+        }
+      );
+      ws.userId = undefined; // Pas de userId en mode développement
     }
-    // Si aucun token n'est fourni ET aucun token statique n'est configuré,
-    // on accepte la connexion (mode développement sans authentification)
 
     // ============================================
     // ÉTAPE 4 : Connexion acceptée - Initialisation
@@ -410,6 +426,10 @@ export async function createFrontendServer({
           // Callback pour enregistrer une ressource active (stream, processus, etc.)
           (requestId, resource) => {
             registerResource(requestId, resource);
+          },
+          // Contexte de la connexion (userId, etc.)
+          {
+            userId: ws.userId,
           }
         );
       } catch (error) {

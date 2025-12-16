@@ -13,6 +13,7 @@ import {
   executeUfwCommand,
   isAddCommand,
 } from "./utils.js";
+import { verifyRole } from "../../../websocket/auth.js";
 
 /**
  * Applique des règles UFW en exécutant une série de commandes
@@ -20,11 +21,42 @@ import {
  * temporairement la règle "deny anywhere" avant d'ajouter, puis on la réajoute après.
  * @param {Object} params - Paramètres contenant les commandes à exécuter
  * @param {string[]} params.commands - Tableau de commandes UFW à exécuter
- * @param {Object} [callbacks] - Callbacks (non utilisés pour cette action)
+ * @param {Object} [callbacks] - Callbacks et contexte
+ * @param {Object} [callbacks.context] - Contexte de la connexion (userId, etc.)
+ * @param {string} [callbacks.context.userId] - ID de l'utilisateur authentifié
  * @returns {Promise<Object>} Résultats de l'exécution de chaque commande
  */
 export async function applyUfwRules(params = {}, callbacks = {}) {
   try {
+    // Vérifier les permissions : seuls ADMIN et OWNER peuvent appliquer des règles UFW
+    const userId = callbacks?.context?.userId;
+    if (!userId) {
+      logger.warn("Tentative d'application de règles UFW sans userId");
+      throw new Error("Authentification requise pour appliquer des règles UFW");
+    }
+
+    // Vérifier que l'utilisateur a un des rôles autorisés
+    const roleCheck = await verifyRole(userId, ["ADMIN", "OWNER"]);
+    if (!roleCheck.authorized) {
+      logger.warn("Tentative d'application de règles UFW sans autorisation", {
+        userId,
+        role: roleCheck.role,
+        error: roleCheck.error,
+      });
+      throw new Error(
+        roleCheck.error ||
+          "Vous n'avez pas les permissions requises pour appliquer des règles UFW. Rôles autorisés: ADMIN, OWNER"
+      );
+    }
+
+    logger.debug(
+      "Vérification du rôle réussie pour l'application des règles UFW",
+      {
+        userId,
+        role: roleCheck.role,
+      }
+    );
+
     validateUfwParams("apply", params);
 
     const { commands } = params;

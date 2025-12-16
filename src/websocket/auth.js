@@ -18,6 +18,12 @@
 import { logger } from "../shared/logger.js";
 
 /**
+ * URL de base de l'API backend pour les vérifications de rôles
+ * Cette URL est utilisée pour récupérer le rôle d'un utilisateur
+ */
+const API_BASE_URL = process.env.API_BASE_URL || "https://devoups.elyamaje.com";
+
+/**
  * Vérifie un token simple (Base64 JSON) localement sans appel API ni signature.
  *
  * Cette fonction décode et vérifie le token en vérifiant :
@@ -65,6 +71,7 @@ export function verifyToken(token, expectedHostname, expectedServerIp) {
 
     const tokenHostname = payload.hostname;
     const tokenServerIp = payload.serverIp;
+    const tokenUserId = payload.userId; // userId inclus dans le token
     const ts = payload.ts; // timestamp en ms
 
     if (!tokenHostname || !tokenServerIp || !ts) {
@@ -106,10 +113,12 @@ export function verifyToken(token, expectedHostname, expectedServerIp) {
     logger.debug("Token vérifié avec succès localement", {
       hostname: tokenHostname,
       serverIp: tokenServerIp,
+      userId: tokenUserId,
     });
 
     return {
       valid: true,
+      userId: tokenUserId, // Retourner le userId extrait du token
     };
   } catch (error) {
     logger.error("Erreur lors de la vérification du token", {
@@ -117,5 +126,195 @@ export function verifyToken(token, expectedHostname, expectedServerIp) {
       name: error.name,
     });
     return { valid: false, error: "Erreur vérification token" };
+  }
+}
+
+/**
+ * Vérifie si un utilisateur a un des rôles autorisés en interrogeant l'API backend
+ *
+ * Cette fonction fait un appel HTTP à l'API backend pour récupérer le rôle d'un utilisateur
+ * et vérifie si ce rôle est présent dans la liste des rôles autorisés.
+ *
+ * Note: L'API backend nécessite une authentification. Si vous avez un token d'API,
+ * vous pouvez le passer via la variable d'environnement API_AUTH_TOKEN ou directement
+ * dans les headers de la requête.
+ *
+ * @param {string} userId - ID de l'utilisateur dont on veut vérifier le rôle
+ * @param {string[]} allowedRoles - Tableau des rôles autorisés (ex: ["ADMIN", "OWNER", "EDITOR"])
+ * @param {Object} [options] - Options supplémentaires
+ * @param {string} [options.authToken] - Token d'authentification optionnel pour l'API (sinon utilise API_AUTH_TOKEN depuis l'environnement)
+ * @returns {Promise<{authorized: boolean, role?: string, error?: string}>}
+ *   - authorized: true si l'utilisateur a un des rôles autorisés, false sinon
+ *   - role: Le rôle de l'utilisateur (si récupéré avec succès)
+ *   - error: Message d'erreur (si la vérification échoue)
+ *
+ * @example
+ * // Utilisation basique
+ * const result = await verifyRole("user-123", ["ADMIN", "OWNER"]);
+ * if (!result.authorized) {
+ *   console.error("Accès refusé:", result.error);
+ * }
+ *
+ * @example
+ * // Avec token d'authentification explicite
+ * const result = await verifyRole("user-123", ["ADMIN", "OWNER"], {
+ *   authToken: "your-api-token"
+ * });
+ */
+export async function verifyRole(userId, allowedRoles, options = {}) {
+  // Vérifications préliminaires
+  if (!userId) {
+    logger.warn("verifyRole appelé sans userId");
+    return {
+      authorized: false,
+      error: "userId requis pour la vérification du rôle",
+    };
+  }
+
+  if (!allowedRoles || !Array.isArray(allowedRoles) || allowedRoles.length === 0) {
+    logger.warn("verifyRole appelé sans rôles autorisés", {
+      allowedRoles,
+    });
+    return {
+      authorized: false,
+      error: "Liste de rôles autorisés requise",
+    };
+  }
+
+  logger.debug("Vérification du rôle de l'utilisateur", {
+    userId,
+    allowedRoles,
+  });
+
+  try {
+    // Construire l'URL de l'API pour récupérer le rôle
+    const apiUrl = `${API_BASE_URL}/api/users/${userId}/role`;
+
+    logger.debug("Appel API pour récupérer le rôle", {
+      apiUrl,
+      userId,
+    });
+
+    // Préparer les headers avec authentification si disponible
+    const headers = {
+      "Content-Type": "application/json",
+    };
+
+    // Ajouter le token d'authentification si fourni (via options ou variable d'environnement)
+    const authToken = options.authToken || process.env.API_AUTH_TOKEN;
+    if (authToken) {
+      headers["Authorization"] = `Bearer ${authToken}`;
+      // Note: L'API backend utilise better-auth qui attend probablement un cookie de session
+      // Si nécessaire, vous devrez peut-être adapter cette partie selon votre système d'authentification
+    }
+
+    // Faire l'appel HTTP à l'API backend
+    const response = await fetch(apiUrl, {
+      method: "GET",
+      headers,
+      // Timeout de 5 secondes pour éviter les blocages
+      signal: AbortSignal.timeout(5000),
+    });
+
+    // Vérifier le statut HTTP
+    if (!response.ok) {
+      const errorText = await response.text();
+      logger.warn("Erreur lors de la récupération du rôle", {
+        status: response.status,
+        statusText: response.statusText,
+        error: errorText,
+        userId,
+      });
+
+      if (response.status === 404) {
+        return {
+          authorized: false,
+          error: "Utilisateur non trouvé dans cette entreprise",
+        };
+      }
+
+      if (response.status === 401) {
+        return {
+          authorized: false,
+          error: "Non authentifié",
+        };
+      }
+
+      return {
+        authorized: false,
+        error: `Erreur API (${response.status}): ${errorText}`,
+      };
+    }
+
+    // Parser la réponse JSON
+    const data = await response.json();
+
+    // Vérifier la structure de la réponse
+    if (!data.success || !data.data || !data.data.role) {
+      logger.warn("Réponse API invalide (structure)", {
+        data,
+        userId,
+      });
+      return {
+        authorized: false,
+        error: "Réponse API invalide",
+      };
+    }
+
+    const userRole = data.data.role;
+
+    logger.debug("Rôle récupéré avec succès", {
+      userId,
+      userRole,
+      allowedRoles,
+    });
+
+    // Vérifier si le rôle de l'utilisateur est dans la liste des rôles autorisés
+    const isAuthorized = allowedRoles.includes(userRole);
+
+    if (!isAuthorized) {
+      logger.warn("Accès refusé: rôle non autorisé", {
+        userId,
+        userRole,
+        allowedRoles,
+      });
+      return {
+        authorized: false,
+        role: userRole,
+        error: `Accès refusé. Rôle requis: ${allowedRoles.join(", ")}. Rôle actuel: ${userRole}`,
+      };
+    }
+
+    logger.debug("Vérification du rôle réussie", {
+      userId,
+      userRole,
+      allowedRoles,
+    });
+
+    return {
+      authorized: true,
+      role: userRole,
+    };
+  } catch (error) {
+    // Gérer les erreurs réseau, timeout, etc.
+    logger.error("Erreur lors de la vérification du rôle", {
+      error: error.message,
+      name: error.name,
+      userId,
+      allowedRoles,
+    });
+
+    // Détecter les erreurs de timeout spécifiquement
+    if (error.name === "TimeoutError" || error.name === "AbortError") {
+      return {
+        authorized: false,
+        error: "Timeout lors de la vérification du rôle",
+      };
+    }
+
+    return {
+      authorized: false,
+      error: `Erreur lors de la vérification du rôle: ${error.message}`,
+    };
   }
 }

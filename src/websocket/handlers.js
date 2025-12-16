@@ -24,12 +24,15 @@ import { getModule, listModules } from "../modules/index.js";
  * @param {Object} message - Message reçu
  * @param {Function} sendMessage - Fonction pour envoyer une réponse
  * @param {Function} [registerResource] - Callback pour enregistrer une ressource (ex: stream) associée à l'ID
+ * @param {Object} [context] - Contexte de la connexion (userId, etc.)
+ * @param {string} [context.userId] - ID de l'utilisateur authentifié
  * @returns {Promise<void>}
  */
 export async function handleMessage(
   message,
   sendMessage,
-  registerResource = () => {}
+  registerResource = () => {},
+  context = {}
 ) {
   const { id, action, params = {} } = message;
 
@@ -115,6 +118,8 @@ export async function handleMessage(
       onResource: (resource) => {
         registerResource(id, resource);
       },
+      // Passer le contexte (userId) aux actions pour vérification des rôles
+      context,
     });
 
     // Si l'action retourne un objet avec des informations de streaming
