@@ -10,6 +10,7 @@ import { executeHostCommand } from "./utils.js";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { requireRole } from "../../../websocket/auth.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -39,6 +40,17 @@ function readErrorFile(filename) {
  */
 export async function runHaproxyAnsible(params = {}, callbacks = {}) {
   try {
+    // Vérifier les permissions : seuls ADMIN et OWNER et EDITOR peuvent exécuter le playbook Ansible HAProxy
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER", "EDITOR"],
+      "exécuter le playbook Ansible HAProxy personnalisé"
+    );
+
     validateHaproxyParams("ansible-run", params);
 
     logger.info("Début de l'installation et configuration HAProxy");

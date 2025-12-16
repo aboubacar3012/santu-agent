@@ -7,6 +7,7 @@
 import { logger } from "../../../shared/logger.js";
 import { validateHaproxyParams } from "../validator.js";
 import { executeHostCommand, hostFileExists } from "./utils.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Liste les applications HAProxy configurées
@@ -16,9 +17,22 @@ import { executeHostCommand, hostFileExists } from "./utils.js";
  */
 export async function listHaproxyApps(params = {}, callbacks = {}) {
   try {
+    // Vérifier les permissions : ADMIN, OWNER, EDITOR et USER peuvent lister les applications HAProxy
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER", "EDITOR", "USER"],
+      "lister les applications HAProxy"
+    );
+
     validateHaproxyParams("app-list", params);
 
-    logger.debug("Début de la récupération de la liste des applications HAProxy");
+    logger.debug(
+      "Début de la récupération de la liste des applications HAProxy"
+    );
 
     const aclDir = "/etc/haproxy/conf.d/acls";
     const backendDir = "/etc/haproxy/conf.d/backends";
@@ -112,9 +126,12 @@ export async function listHaproxyApps(params = {}, callbacks = {}) {
 
     return { apps };
   } catch (error) {
-    logger.error("Erreur lors de la récupération de la liste des applications HAProxy", {
-      error: error.message,
-    });
+    logger.error(
+      "Erreur lors de la récupération de la liste des applications HAProxy",
+      {
+        error: error.message,
+      }
+    );
     throw error;
   }
 }

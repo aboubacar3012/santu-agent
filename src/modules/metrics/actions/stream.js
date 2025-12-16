@@ -7,6 +7,7 @@
 import { logger } from "../../../shared/logger.js";
 import { validateMetricsParams } from "../validator.js";
 import { executeCommand } from "../../../shared/executor.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Convertit une valeur en float de manière sûre
@@ -378,6 +379,17 @@ async function collectAllMetrics() {
  */
 export async function streamMetrics(params = {}, callbacks = {}) {
   try {
+    // Vérifier les permissions : ADMIN, OWNER, EDITOR et USER peuvent consulter les métriques
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER", "EDITOR", "USER"],
+      "consulter les métriques système"
+    );
+
     const validatedParams = validateMetricsParams("stream", params);
     const { interval } = validatedParams;
 

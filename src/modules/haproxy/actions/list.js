@@ -7,6 +7,7 @@
 import { logger } from "../../../shared/logger.js";
 import { readFileSync, existsSync } from "fs";
 import { validateHaproxyParams } from "../validator.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Liste la configuration HAProxy depuis le fichier /etc/haproxy/haproxy.cfg
@@ -16,6 +17,17 @@ import { validateHaproxyParams } from "../validator.js";
  */
 export async function listHaproxyConfig(params = {}, callbacks = {}) {
   try {
+    // Vérifier les permissions : ADMIN, OWNER, EDITOR et USER peuvent lister la configuration HAProxy
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER", "EDITOR", "USER"],
+      "lister la configuration HAProxy"
+    );
+
     validateHaproxyParams("list", params);
 
     logger.debug("Début de la récupération de la configuration HAProxy");

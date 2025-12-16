@@ -12,6 +12,7 @@ import {
   getCachedLogsLast24h,
   generateLogKey,
 } from "../../../shared/redis.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Parse une ligne de log HAProxy et vérifie si elle doit être filtrée
@@ -52,6 +53,17 @@ function shouldIgnoreLog(logLine) {
  */
 export async function getHaproxyLogs(params = {}, callbacks = {}) {
   try {
+    // Vérifier les permissions : ADMIN, OWNER, EDITOR et USER peuvent consulter les logs HAProxy
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER", "EDITOR", "USER"],
+      "consulter les logs HAProxy"
+    );
+
     validateHaproxyParams("logs", params);
 
     // Mode streaming uniquement

@@ -13,7 +13,6 @@ import * as dockerModule from "./docker/index.js";
 import * as sshModule from "./ssh/index.js";
 import * as cronModule from "./cron/index.js";
 import * as userModule from "./user/index.js";
-import * as packagesModule from "./packages/index.js";
 import * as metadataModule from "./metadata/index.js";
 import * as ufwModule from "./ufw/index.js";
 import * as haproxyModule from "./haproxy/index.js";
@@ -111,22 +110,6 @@ try {
   logger.info("Module User enregistré avec succès");
 } catch (error) {
   logger.error("Erreur lors de l'enregistrement du module User", {
-    error: error.message,
-    stack: error.stack,
-  });
-  throw error;
-}
-
-try {
-  logger.debug("Tentative d'enregistrement du module Packages", {
-    packagesModule,
-    hasActions: !!packagesModule.actions,
-    hasValidator: !!packagesModule.validator,
-  });
-  registerModule("packages", packagesModule);
-  logger.info("Module Packages enregistré avec succès");
-} catch (error) {
-  logger.error("Erreur lors de l'enregistrement du module Packages", {
     error: error.message,
     stack: error.stack,
   });

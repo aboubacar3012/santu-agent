@@ -7,6 +7,7 @@
 import { logger } from "../../../shared/logger.js";
 import { validateSshParams } from "../validator.js";
 import { getSystemUsers, getUserHome, getUserSshKeys } from "./utils.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Liste toutes les clés SSH du serveur (avec duplication si une clé apparaît plusieurs fois)
@@ -16,6 +17,17 @@ import { getSystemUsers, getUserHome, getUserSshKeys } from "./utils.js";
  */
 export async function listSshKeys(params = {}, callbacks = {}) {
   try {
+    // Vérifier les permissions : ADMIN, OWNER, EDITOR et USER peuvent lister les clés SSH
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER"],
+      "lister les clés SSH personnalisées"
+    );
+
     validateSshParams("list", params);
 
     logger.debug("Début de la récupération des clés SSH");

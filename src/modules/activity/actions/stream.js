@@ -612,14 +612,14 @@ function startSystemEventsCollector(callbacks, cleanupFunctions) {
  */
 export async function streamActivity(params = {}, callbacks = {}) {
   try {
-    // Vérifier les permissions : seuls ADMIN et OWNER peuvent streaming des événements système
+    // Vérifier les permissions : seuls ADMIN et OWNER et EDITOR et USER peuvent streaming des événements système
     const userId = callbacks?.context?.userId;
     const companyId = callbacks?.context?.companyId;
 
     await requireRole(
       userId,
       companyId,
-      ["ADMIN", "OWNER", "EDITOR", ""],
+      ["ADMIN", "OWNER", "EDITOR", "USER"],
       "streaming des événements système"
     );
 

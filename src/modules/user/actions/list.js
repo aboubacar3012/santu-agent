@@ -8,6 +8,7 @@ import { logger } from "../../../shared/logger.js";
 import { validateUserParams } from "../validator.js";
 import { readFileSync } from "fs";
 import { getUserGroups } from "./utils.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Liste tous les utilisateurs du système
@@ -18,6 +19,17 @@ import { getUserGroups } from "./utils.js";
  */
 export async function listUsers(params = {}, callbacks = {}) {
   try {
+    // Vérifier les permissions : seuls ADMIN et OWNER peuvent lister les utilisateurs système
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER", "EDITOR", "USER"],
+      "lister les utilisateurs personnalisés"
+    );
+
     validateUserParams("list", params);
 
     logger.debug("Début de la récupération des utilisateurs système");

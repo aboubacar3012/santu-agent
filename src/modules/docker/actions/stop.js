@@ -18,7 +18,7 @@ import { requireRole } from "../../../websocket/auth.js";
  */
 export async function stopContainer(params, callbacks = {}) {
   try {
-    // Vérifier les permissions : ADMIN, OWNER et EDITOR peuvent arrêter un conteneur
+    // Vérifier les permissions : ADMIN, OWNER peuvent arrêter un conteneur
     const userId = callbacks?.context?.userId;
     const companyId = callbacks?.context?.companyId;
 
@@ -26,7 +26,7 @@ export async function stopContainer(params, callbacks = {}) {
       userId,
       companyId,
       ["ADMIN", "OWNER"],
-      "arrêter un conteneur Docker"
+      "arrêter un conteneur Docker personnalisé"
     );
 
     const docker = getDocker();

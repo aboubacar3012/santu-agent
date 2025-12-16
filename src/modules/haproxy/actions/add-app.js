@@ -11,6 +11,7 @@ import {
   hostFileExists,
   getHostFileSize,
 } from "./utils.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Ajoute une application HAProxy avec génération automatique du certificat SSL
@@ -26,6 +27,17 @@ import {
 export async function addHaproxyApp(params = {}, callbacks = {}) {
   const startTime = Date.now();
   try {
+    // Vérifier les permissions : ADMIN, OWNER et EDITOR peuvent ajouter une application HAProxy
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER", "EDITOR"],
+      "ajouter une application HAProxy"
+    );
+
     logger.info("=== DÉBUT addHaproxyApp ===", { params });
 
     // Valider les paramètres

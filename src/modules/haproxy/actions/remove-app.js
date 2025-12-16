@@ -7,6 +7,7 @@
 import { logger } from "../../../shared/logger.js";
 import { validateHaproxyParams } from "../validator.js";
 import { executeHostCommand, hostFileExists } from "./utils.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Supprime une application HAProxy
@@ -17,6 +18,17 @@ import { executeHostCommand, hostFileExists } from "./utils.js";
  */
 export async function removeHaproxyApp(params = {}, callbacks = {}) {
   try {
+    // Vérifier les permissions : ADMIN, OWNER et EDITOR peuvent supprimer une application HAProxy
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER"],
+      "supprimer une application HAProxy"
+    );
+
     // Valider les paramètres
     const validatedParams = validateHaproxyParams("remove-app", params);
     const { app_slug } = validatedParams;

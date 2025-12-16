@@ -19,7 +19,7 @@ import { requireRole } from "../../../websocket/auth.js";
  */
 export async function removeContainer(params, callbacks = {}) {
   try {
-    // Vérifier les permissions : ADMIN, OWNER et EDITOR peuvent supprimer un conteneur
+    // Vérifier les permissions : ADMIN, OWNER peuvent supprimer un conteneur
     const userId = callbacks?.context?.userId;
     const companyId = callbacks?.context?.companyId;
 
@@ -27,7 +27,7 @@ export async function removeContainer(params, callbacks = {}) {
       userId,
       companyId,
       ["ADMIN", "OWNER"],
-      "supprimer un conteneur Docker"
+      "supprimer un conteneur Docker personnalisé"
     );
 
     const docker = getDocker();

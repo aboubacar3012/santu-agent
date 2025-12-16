@@ -16,6 +16,7 @@ import {
   getNetworkInfo,
   getSshPort,
 } from "./utils.js";
+import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Récupère toutes les métadonnées statiques du serveur
@@ -25,6 +26,17 @@ import {
  */
 export async function getMetadata(params = {}, callbacks = {}) {
   try {
+    // Vérifier les permissions : ADMIN, OWNER, EDITOR et USER peuvent consulter les métadonnées
+    const userId = callbacks?.context?.userId;
+    const companyId = callbacks?.context?.companyId;
+
+    await requireRole(
+      userId,
+      companyId,
+      ["ADMIN", "OWNER", "EDITOR", "USER"],
+      "consulter les métadonnées du serveur"
+    );
+
     validateMetadataParams("info", params);
 
     logger.debug("Début de la récupération des métadonnées du serveur");
