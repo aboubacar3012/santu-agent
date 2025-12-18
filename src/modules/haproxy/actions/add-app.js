@@ -26,6 +26,107 @@ import { requireRole } from "../../../websocket/auth.js";
  */
 export async function addHaproxyApp(params = {}, callbacks = {}) {
   const startTime = Date.now();
+
+  // État initial et tracking pour le rollback
+  const rollbackState = {
+    haproxyWasActive: false,
+    haproxyWasStopped: false,
+    filesCreated: [],
+    certCreated: false,
+    certWasEmpty: false,
+    legacyFileDeleted: false,
+  };
+
+  /**
+   * Fonction de rollback : restaure l'état initial en cas d'erreur
+   */
+  const rollback = async (error) => {
+    logger.info("=== ROLLBACK: Annulation des modifications ===");
+
+    try {
+      // 1. Supprimer tous les fichiers créés
+      for (const filePath of rollbackState.filesCreated) {
+        logger.info(`[ROLLBACK] Suppression du fichier: ${filePath}`);
+        try {
+          await executeHostCommand(`rm -f '${filePath}'`);
+          logger.debug(`[ROLLBACK] Fichier supprimé: ${filePath}`);
+        } catch (rmError) {
+          logger.warn(`[ROLLBACK] Impossible de supprimer ${filePath}`, {
+            error: rmError.message,
+          });
+        }
+      }
+
+      // 2. Restaurer le certificat vide si nécessaire
+      if (rollbackState.certWasEmpty && rollbackState.certPath) {
+        logger.info("[ROLLBACK] Restauration du certificat vide");
+        try {
+          await executeHostCommand(`touch '${rollbackState.certPath}'`);
+        } catch (touchError) {
+          logger.warn("[ROLLBACK] Impossible de restaurer le certificat vide", {
+            error: touchError.message,
+          });
+        }
+      }
+
+      // 3. Restaurer le fichier legacy si nécessaire
+      if (rollbackState.legacyFileDeleted && rollbackState.legacyPath) {
+        logger.info("[ROLLBACK] Restauration du fichier legacy");
+        // Note: On ne peut pas restaurer le contenu, mais on crée un fichier vide
+        // pour éviter les erreurs de configuration
+        try {
+          await executeHostCommand(`touch '${rollbackState.legacyPath}'`);
+        } catch (touchError) {
+          logger.warn("[ROLLBACK] Impossible de restaurer le fichier legacy", {
+            error: touchError.message,
+          });
+        }
+      }
+
+      // 4. Redémarrer HAProxy si nécessaire
+      if (rollbackState.haproxyWasStopped && rollbackState.haproxyWasActive) {
+        logger.info("[ROLLBACK] Redémarrage de HAProxy");
+        try {
+          const startResult = await executeHostCommand(
+            `systemctl start ${rollbackState.haproxyServiceName}`
+          );
+          if (startResult.error) {
+            logger.error("[ROLLBACK] Erreur lors du redémarrage de HAProxy", {
+              error: startResult.stderr,
+            });
+            // Essayer un restart complet si start échoue
+            const restartResult = await executeHostCommand(
+              `systemctl restart ${rollbackState.haproxyServiceName}`
+            );
+            if (restartResult.error) {
+              logger.error(
+                "[ROLLBACK] Erreur lors du redémarrage complet de HAProxy",
+                {
+                  error: restartResult.stderr,
+                }
+              );
+            } else {
+              logger.info("[ROLLBACK] HAProxy redémarré avec succès (restart)");
+            }
+          } else {
+            logger.info("[ROLLBACK] HAProxy redémarré avec succès");
+          }
+        } catch (startError) {
+          logger.error("[ROLLBACK] Erreur lors du redémarrage de HAProxy", {
+            error: startError.message,
+          });
+        }
+      }
+
+      logger.info("=== ROLLBACK TERMINÉ ===");
+    } catch (rollbackError) {
+      logger.error("=== ERREUR LORS DU ROLLBACK ===", {
+        error: rollbackError.message,
+        stack: rollbackError.stack,
+      });
+    }
+  };
+
   try {
     // Vérifier les permissions : ADMIN, OWNER et EDITOR peuvent ajouter une application HAProxy
     const userId = callbacks?.context?.userId;
@@ -65,6 +166,9 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
     const haproxy_backend_dir = "/etc/haproxy/conf.d/backends";
     const haproxy_service_name = "haproxy";
 
+    // Sauvegarder le nom du service pour le rollback
+    rollbackState.haproxyServiceName = haproxy_service_name;
+
     // 1. Vérifier l'état initial de HAProxy
     logger.info("[ÉTAPE 1/11] Vérification de l'état de HAProxy");
     const haproxyStateResult = await executeHostCommand(
@@ -72,6 +176,8 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
     );
     const haproxyInitialState = haproxyStateResult.stdout.trim();
     const isHaproxyActive = haproxyInitialState === "active";
+    rollbackState.haproxyWasActive = isHaproxyActive;
+
     logger.info("[ÉTAPE 1/11] État initial de HAProxy", {
       state: haproxyInitialState,
       isActive: isHaproxyActive,
@@ -89,18 +195,19 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
         `mkdir -p '${dir}' && chmod 755 '${dir}'`
       );
       if (mkdirResult.error) {
-        logger.warn(`Erreur lors de la création du répertoire ${dir}`, {
-          error: mkdirResult.stderr,
-        });
-      } else {
-        logger.debug(`[ÉTAPE 2/11] Répertoire créé: ${dir}`);
+        const errorMsg = `Erreur lors de la création du répertoire ${dir}: ${mkdirResult.stderr}`;
+        logger.error(`[ÉTAPE 2/11] ${errorMsg}`);
+        await rollback(new Error(errorMsg));
+        throw new Error(errorMsg);
       }
+      logger.debug(`[ÉTAPE 2/11] Répertoire créé: ${dir}`);
     }
     logger.info("[ÉTAPE 2/11] Répertoires créés");
 
     // 3. Vérifier si le certificat existe déjà
     logger.info("[ÉTAPE 3/11] Vérification du certificat existant");
     const certPath = `${haproxy_certs_dir}/${app_domain}.pem`;
+    rollbackState.certPath = certPath;
     logger.debug(`[ÉTAPE 3/11] Vérification du fichier: ${certPath}`);
     const certExists = await hostFileExists(certPath);
     const certSize = certExists ? await getHostFileSize(certPath) : 0;
@@ -112,7 +219,14 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
     // 4. Supprimer un certificat vide ou corrompu
     if (certExists && certSize === 0) {
       logger.info("[ÉTAPE 4/11] Suppression du certificat vide");
-      await executeHostCommand(`rm -f '${certPath}'`);
+      rollbackState.certWasEmpty = true;
+      const rmResult = await executeHostCommand(`rm -f '${certPath}'`);
+      if (rmResult.error) {
+        const errorMsg = `Erreur lors de la suppression du certificat vide: ${rmResult.stderr}`;
+        logger.error(`[ÉTAPE 4/11] ${errorMsg}`);
+        await rollback(new Error(errorMsg));
+        throw new Error(errorMsg);
+      }
       logger.info("[ÉTAPE 4/11] Certificat vide supprimé");
     } else {
       logger.info("[ÉTAPE 4/11] Pas de certificat vide à supprimer");
@@ -121,10 +235,18 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
     // 5. Supprimer l'ancien fichier legacy
     logger.info("[ÉTAPE 5/11] Vérification des fichiers legacy");
     const legacyPath = `/etc/haproxy/conf.d/apps/${app_slug}.cfg`;
+    rollbackState.legacyPath = legacyPath;
     const legacyExists = await hostFileExists(legacyPath);
     if (legacyExists) {
       logger.info("[ÉTAPE 5/11] Suppression de l'ancien fichier legacy");
-      await executeHostCommand(`rm -f '${legacyPath}'`);
+      rollbackState.legacyFileDeleted = true;
+      const rmResult = await executeHostCommand(`rm -f '${legacyPath}'`);
+      if (rmResult.error) {
+        const errorMsg = `Erreur lors de la suppression du fichier legacy: ${rmResult.stderr}`;
+        logger.error(`[ÉTAPE 5/11] ${errorMsg}`);
+        await rollback(new Error(errorMsg));
+        throw new Error(errorMsg);
+      }
       logger.info("[ÉTAPE 5/11] Fichier legacy supprimé");
     } else {
       logger.info("[ÉTAPE 5/11] Pas de fichier legacy à supprimer");
@@ -138,15 +260,23 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
     logger.info("[ÉTAPE 6/11] Génération certificat nécessaire?", {
       needsCert,
     });
-    let haproxyWasStopped = false;
+
     if (needsCert) {
       logger.info("[ÉTAPE 6/11] Génération du certificat SSL nécessaire");
 
       // Arrêter HAProxy si actif
       if (isHaproxyActive) {
         logger.info("[ÉTAPE 6/11] Arrêt de HAProxy pour certbot");
-        await executeHostCommand(`systemctl stop ${haproxy_service_name}`);
-        haproxyWasStopped = true;
+        const stopResult = await executeHostCommand(
+          `systemctl stop ${haproxy_service_name}`
+        );
+        if (stopResult.error) {
+          const errorMsg = `Erreur lors de l'arrêt de HAProxy: ${stopResult.stderr}`;
+          logger.error(`[ÉTAPE 6/11] ${errorMsg}`);
+          await rollback(new Error(errorMsg));
+          throw new Error(errorMsg);
+        }
+        rollbackState.haproxyWasStopped = true;
         logger.info("[ÉTAPE 6/11] HAProxy arrêté");
       } else {
         logger.info(
@@ -228,6 +358,7 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
           error: error.message,
           duration: `${certbotDuration}ms`,
         });
+        await rollback(new Error(errorMsg));
         throw new Error(errorMsg);
       }
 
@@ -240,12 +371,15 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
         (!certbotResult.stdout.includes("Successfully") &&
           certbotResult.stderr.length > 0)
       ) {
-        const errorMsg = `Certbot n'a pas généré le certificat pour ${app_domain}. Vérifiez DNS et port 80.`;
-        logger.error(errorMsg, {
+        const errorMsg = `Certbot n'a pas généré le certificat pour ${app_domain}. Vérifiez DNS et port 80. Détails: ${
+          certbotResult.stderr || certbotResult.stdout
+        }`;
+        logger.error("[ÉTAPE 6/11] Erreur certbot", {
           stdout: certbotResult.stdout,
           stderr: certbotResult.stderr,
           hasError: certbotResult.error,
         });
+        await rollback(new Error(errorMsg));
         throw new Error(errorMsg);
       }
 
@@ -260,19 +394,24 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
       );
 
       if (concatResult.error) {
-        logger.error(
-          "[ÉTAPE 6/11] Erreur lors de la concaténation du certificat",
-          {
-            error: concatResult.stderr,
-          }
-        );
-        throw new Error("Erreur lors de la création du certificat PEM");
+        const errorMsg = `Erreur lors de la création du certificat PEM: ${concatResult.stderr}`;
+        logger.error(`[ÉTAPE 6/11] ${errorMsg}`);
+        await rollback(new Error(errorMsg));
+        throw new Error(errorMsg);
       }
+      rollbackState.filesCreated.push(certPath);
+      rollbackState.certCreated = true;
       logger.info("[ÉTAPE 6/11] Certificat PEM concaténé");
 
       // Définir les permissions du certificat
       logger.debug("[ÉTAPE 6/11] Définition des permissions du certificat");
-      await executeHostCommand(`chmod 600 '${certPath}'`);
+      const chmodResult = await executeHostCommand(`chmod 600 '${certPath}'`);
+      if (chmodResult.error) {
+        const errorMsg = `Erreur lors de la définition des permissions du certificat: ${chmodResult.stderr}`;
+        logger.error(`[ÉTAPE 6/11] ${errorMsg}`);
+        await rollback(new Error(errorMsg));
+        throw new Error(errorMsg);
+      }
       logger.info("[ÉTAPE 6/11] Certificat généré avec succès");
     } else {
       // 7. Régénérer le PEM si le certificat Let's Encrypt existe mais le PEM est vide
@@ -281,10 +420,25 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
 
       if (letsencryptCertExists && (!certExists || certSize === 0)) {
         logger.debug("Régénération du PEM depuis Let's Encrypt");
-        await executeHostCommand(
+        const regenResult = await executeHostCommand(
           `cat '${letsencrypt_live_dir}/${app_domain}/fullchain.pem' '${letsencrypt_live_dir}/${app_domain}/privkey.pem' > '${certPath}'`
         );
-        await executeHostCommand(`chmod 600 '${certPath}'`);
+        if (regenResult.error) {
+          const errorMsg = `Erreur lors de la régénération du certificat PEM: ${regenResult.stderr}`;
+          logger.error(`[ÉTAPE 6/11] ${errorMsg}`);
+          await rollback(new Error(errorMsg));
+          throw new Error(errorMsg);
+        }
+        rollbackState.filesCreated.push(certPath);
+        rollbackState.certCreated = true;
+
+        const chmodResult = await executeHostCommand(`chmod 600 '${certPath}'`);
+        if (chmodResult.error) {
+          const errorMsg = `Erreur lors de la définition des permissions du certificat: ${chmodResult.stderr}`;
+          logger.error(`[ÉTAPE 6/11] ${errorMsg}`);
+          await rollback(new Error(errorMsg));
+          throw new Error(errorMsg);
+        }
       }
     }
 
@@ -308,11 +462,12 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
     );
 
     if (aclResult.error) {
-      logger.error("[ÉTAPE 8/11] Erreur lors de la création du fichier ACL", {
-        error: aclResult.stderr,
-      });
-      throw new Error("Erreur lors de la création du fichier ACL");
+      const errorMsg = `Erreur lors de la création du fichier ACL: ${aclResult.stderr}`;
+      logger.error(`[ÉTAPE 8/11] ${errorMsg}`);
+      await rollback(new Error(errorMsg));
+      throw new Error(errorMsg);
     }
+    rollbackState.filesCreated.push(aclPath);
     logger.info("[ÉTAPE 8/11] Fichier ACL créé avec succès");
 
     // 9. Créer le fichier backend
@@ -338,14 +493,12 @@ backend ${app_slug}_backend
     );
 
     if (backendResult.error) {
-      logger.error(
-        "[ÉTAPE 9/11] Erreur lors de la création du fichier backend",
-        {
-          error: backendResult.stderr,
-        }
-      );
-      throw new Error("Erreur lors de la création du fichier backend");
+      const errorMsg = `Erreur lors de la création du fichier backend: ${backendResult.stderr}`;
+      logger.error(`[ÉTAPE 9/11] ${errorMsg}`);
+      await rollback(new Error(errorMsg));
+      throw new Error(errorMsg);
     }
+    rollbackState.filesCreated.push(backendPath);
     logger.info("[ÉTAPE 9/11] Fichier backend créé avec succès");
 
     // 10. Vérifier les dates d'expiration du certificat
@@ -375,62 +528,53 @@ backend ${app_slug}_backend
     }
 
     logger.info("[ÉTAPE 10/11] Dates d'expiration récupérées", { certDates });
-    logger.info("[ÉTAPE 11/11] Configuration HAProxy déployée avec succès", {
-      app_name,
-      app_domain,
-      app_slug,
-    });
 
-    // 11. Redémarrer/recharger HAProxy de manière asynchrone après la réponse
-    logger.info(
-      "[ÉTAPE 11/11] Préparation du redémarrage/rechargement HAProxy (asynchrone)"
-    );
-    // pour éviter de fermer la connexion WebSocket prématurément
-    setImmediate(async () => {
-      try {
-        if (haproxyWasStopped) {
-          // Si HAProxy a été arrêté pour certbot, le redémarrer
-          logger.info("Redémarrage de HAProxy après génération du certificat");
-          const startResult = await executeHostCommand(
-            `systemctl start ${haproxy_service_name}`
-          );
-          if (startResult.error) {
-            logger.error("Erreur lors du redémarrage de HAProxy", {
-              error: startResult.stderr,
-            });
-          } else {
-            logger.info("HAProxy redémarré avec succès");
-          }
-        } else if (isHaproxyActive) {
-          // Si HAProxy était actif et n'a pas été arrêté, recharger la configuration
-          logger.info("Rechargement de la configuration HAProxy");
-          const reloadResult = await executeHostCommand(
-            `systemctl reload ${haproxy_service_name}`
-          );
-          if (reloadResult.error) {
-            logger.error("Erreur lors du rechargement de HAProxy", {
-              error: reloadResult.stderr,
-            });
-            // Si reload échoue, essayer restart
-            logger.info("Tentative de redémarrage complet de HAProxy");
-            const restartResult = await executeHostCommand(
-              `systemctl restart ${haproxy_service_name}`
-            );
-            if (restartResult.error) {
-              logger.error("Erreur lors du redémarrage de HAProxy", {
-                error: restartResult.stderr,
-              });
-            }
-          } else {
-            logger.info("Configuration HAProxy rechargée avec succès");
-          }
-        }
-      } catch (error) {
-        logger.error("Erreur lors du redémarrage/rechargement de HAProxy", {
-          error: error.message,
-        });
+    // 11. Redémarrer/recharger HAProxy
+    logger.info("[ÉTAPE 11/11] Redémarrage/rechargement HAProxy");
+    if (rollbackState.haproxyWasStopped) {
+      // Si HAProxy a été arrêté pour certbot, le redémarrer
+      logger.info("Redémarrage de HAProxy après génération du certificat");
+      const startResult = await executeHostCommand(
+        `systemctl start ${haproxy_service_name}`
+      );
+      if (startResult.error) {
+        const errorMsg = `Erreur lors du redémarrage de HAProxy: ${startResult.stderr}`;
+        logger.error(`[ÉTAPE 11/11] ${errorMsg}`);
+        await rollback(new Error(errorMsg));
+        throw new Error(errorMsg);
       }
-    });
+      logger.info("[ÉTAPE 11/11] HAProxy redémarré avec succès");
+    } else if (isHaproxyActive) {
+      // Si HAProxy était actif et n'a pas été arrêté, recharger la configuration
+      logger.info("Rechargement de la configuration HAProxy");
+      const reloadResult = await executeHostCommand(
+        `systemctl reload ${haproxy_service_name}`
+      );
+      if (reloadResult.error) {
+        logger.warn(
+          "Erreur lors du rechargement de HAProxy, tentative de redémarrage",
+          {
+            error: reloadResult.stderr,
+          }
+        );
+        // Si reload échoue, essayer restart
+        const restartResult = await executeHostCommand(
+          `systemctl restart ${haproxy_service_name}`
+        );
+        if (restartResult.error) {
+          const errorMsg = `Erreur lors du redémarrage de HAProxy: ${restartResult.stderr}`;
+          logger.error(`[ÉTAPE 11/11] ${errorMsg}`);
+          await rollback(new Error(errorMsg));
+          throw new Error(errorMsg);
+        } else {
+          logger.info("[ÉTAPE 11/11] HAProxy redémarré avec succès (restart)");
+        }
+      } else {
+        logger.info(
+          "[ÉTAPE 11/11] Configuration HAProxy rechargée avec succès"
+        );
+      }
+    }
 
     const duration = Date.now() - startTime;
     logger.info("=== SUCCÈS addHaproxyApp ===", {
@@ -454,7 +598,15 @@ backend ${app_slug}_backend
       stack: error.stack,
       duration: `${duration}ms`,
     });
+
+    // Le rollback a déjà été effectué dans les blocs catch individuels
+    // Mais on le refait ici au cas où une erreur surviendrait ailleurs
+    if (!rollbackState.rollbackExecuted) {
+      rollbackState.rollbackExecuted = true;
+      await rollback(error);
+    }
+
+    // Relancer l'erreur avec le message exact
     throw error;
   }
 }
-

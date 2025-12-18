@@ -1,7 +1,7 @@
 /**
- * Action ansible-run - Installe et configure HAProxy en reproduisant le playbook Ansible
+ * Action install-or-update - Installe et configure HAProxy en reproduisant le playbook Ansible
  *
- * @module modules/haproxy/actions/ansible-run
+ * @module modules/haproxy/actions/installOrUpdate
  */
 
 import { logger } from "../../../shared/logger.js";
@@ -38,9 +38,9 @@ function readErrorFile(filename) {
  * @param {Object} [callbacks] - Callbacks (non utilisés pour cette action)
  * @returns {Promise<Object>} Résultat de l'opération
  */
-export async function runHaproxyAnsible(params = {}, callbacks = {}) {
+export async function installOrUpdateHaproxy(params = {}, callbacks = {}) {
   try {
-    // Vérifier les permissions : seuls ADMIN et OWNER et EDITOR peuvent exécuter le playbook Ansible HAProxy
+    // Vérifier les permissions : seuls ADMIN et OWNER et EDITOR peuvent installer ou mettre à jour HAProxy
     const userId = callbacks?.context?.userId;
     const companyId = callbacks?.context?.companyId;
 
@@ -48,10 +48,10 @@ export async function runHaproxyAnsible(params = {}, callbacks = {}) {
       userId,
       companyId,
       ["ADMIN", "OWNER", "EDITOR"],
-      "exécuter le playbook Ansible HAProxy personnalisé"
+      "installer ou mettre à jour HAProxy"
     );
 
-    validateHaproxyParams("ansible-run", params);
+    validateHaproxyParams("install-or-update", params);
 
     logger.info("Début de l'installation et configuration HAProxy");
 

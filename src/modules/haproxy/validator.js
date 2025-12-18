@@ -15,7 +15,7 @@ const ALLOWED_HAPROXY_ACTIONS = [
   "add-app",
   "app-list",
   "remove-app",
-  "ansible-run",
+  "install-or-update",
   "logs",
 ];
 
@@ -63,8 +63,8 @@ export function validateParams(action, params) {
     case "app-list":
       // Pas de paramètres requis pour app-list
       return {};
-    case "ansible-run":
-      // Pas de paramètres requis pour ansible-run
+    case "install-or-update":
+      // Pas de paramètres requis pour install-or-update
       return {};
     case "logs":
       // Pas de paramètres requis pour logs
