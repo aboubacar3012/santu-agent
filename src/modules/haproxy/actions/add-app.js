@@ -1,14 +1,18 @@
 /**
  * Action add-app - Ajoute une application HAProxy avec génération automatique du certificat SSL
  * 
- * STRATÉGIE 1 : Utilisation de certbot en mode webroot au lieu de standalone
- * - HAProxy reste actif pendant la génération du certificat
- * - Un backend temporaire sert le répertoire webroot pour la validation ACME
- * - Pas d'interruption des autres applications utilisant HAProxy
+ * STRATÉGIE 1 : Utilisation de certbot en mode standalone
+ * - HAProxy est arrêté temporairement pour libérer le port 80
+ * - Certbot écoute directement sur le port 80 pour la validation ACME
+ * - HAProxy est redémarré après la génération du certificat
  * 
  * STRATÉGIE 2 : Messages de progression (heartbeat)
  * - Envoi de messages de progression via onStream pour maintenir la connexion WebSocket active
  * - Informe l'utilisateur de l'avancement de l'opération
+ * 
+ * STRATÉGIE 3 : Gestion d'erreurs améliorée
+ * - Envoi immédiat des erreurs via sendProgress avant le rollback
+ * - Rollback asynchrone pour ne pas bloquer l'envoi de l'erreur au frontend
  *
  * @module modules/haproxy/actions/add-app
  */
@@ -103,10 +107,6 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
     certCreated: false,
     certWasEmpty: false,
     legacyFileDeleted: false,
-    // Fichiers temporaires pour le mode webroot
-    webrootBackendCreated: false,
-    webrootAclCreated: false,
-    webrootDirCreated: false,
   };
 
   /**
@@ -130,55 +130,7 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
         }
       }
 
-      // 2. Supprimer les fichiers temporaires webroot si créés
-      if (
-        rollbackState.webrootBackendCreated &&
-        rollbackState.webrootBackendPath
-      ) {
-        logger.info("[ROLLBACK] Suppression du backend webroot temporaire");
-        try {
-          await executeHostCommand(
-            `rm -f '${rollbackState.webrootBackendPath}'`
-          );
-        } catch (rmError) {
-          logger.warn("[ROLLBACK] Impossible de supprimer le backend webroot", {
-            error: rmError.message,
-          });
-        }
-      }
-
-      if (rollbackState.webrootAclCreated && rollbackState.webrootAclPath) {
-        logger.info("[ROLLBACK] Suppression de l'ACL webroot temporaire");
-        try {
-          await executeHostCommand(`rm -f '${rollbackState.webrootAclPath}'`);
-        } catch (rmError) {
-          logger.warn("[ROLLBACK] Impossible de supprimer l'ACL webroot", {
-            error: rmError.message,
-          });
-        }
-      }
-
-      // 3. Recharger HAProxy si des fichiers temporaires ont été créés
-      if (
-        (rollbackState.webrootBackendCreated ||
-          rollbackState.webrootAclCreated) &&
-        rollbackState.haproxyWasActive
-      ) {
-        logger.info(
-          "[ROLLBACK] Rechargement de HAProxy pour supprimer les configs temporaires"
-        );
-        try {
-          await executeHostCommand(
-            `systemctl reload ${rollbackState.haproxyServiceName}`
-          );
-        } catch (reloadError) {
-          logger.warn("[ROLLBACK] Erreur lors du rechargement de HAProxy", {
-            error: reloadError.message,
-          });
-        }
-      }
-
-      // 4. Restaurer le certificat vide si nécessaire
+      // 2. Restaurer le certificat vide si nécessaire
       if (rollbackState.certWasEmpty && rollbackState.certPath) {
         logger.info("[ROLLBACK] Restauration du certificat vide");
         try {
@@ -190,7 +142,7 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
         }
       }
 
-      // 5. Restaurer le fichier legacy si nécessaire
+      // 3. Restaurer le fichier legacy si nécessaire
       if (rollbackState.legacyFileDeleted && rollbackState.legacyPath) {
         logger.info("[ROLLBACK] Restauration du fichier legacy");
         try {
@@ -202,7 +154,7 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
         }
       }
 
-      // 6. Redémarrer HAProxy si nécessaire (seulement si arrêté, ce qui ne devrait plus arriver)
+      // 4. Redémarrer HAProxy si nécessaire
       if (rollbackState.haproxyWasStopped && rollbackState.haproxyWasActive) {
         logger.info("[ROLLBACK] Redémarrage de HAProxy");
         try {
@@ -286,11 +238,6 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
     const haproxy_backend_dir = "/etc/haproxy/conf.d/backends";
     const haproxy_service_name = "haproxy";
 
-    // Répertoire webroot pour certbot (mode webroot)
-    // Let's Encrypt valide en accédant à http://domain/.well-known/acme-challenge/token
-    const webroot_dir = "/var/www/html";
-    const acme_challenge_dir = `${webroot_dir}/.well-known/acme-challenge`;
-
     // Sauvegarder le nom du service pour le rollback
     rollbackState.haproxyServiceName = haproxy_service_name;
 
@@ -321,8 +268,6 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
       haproxy_certs_dir,
       haproxy_acl_dir,
       haproxy_backend_dir,
-      webroot_dir,
-      acme_challenge_dir,
     ]) {
       logger.debug(`[ÉTAPE 2/11] Création du répertoire: ${dir}`);
       const mkdirResult = await executeHostCommand(
@@ -334,11 +279,6 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
         handleErrorWithRollback(2, errorMsg);
       }
       logger.debug(`[ÉTAPE 2/11] Répertoire créé: ${dir}`);
-
-      // Marquer le répertoire webroot comme créé pour le rollback
-      if (dir === acme_challenge_dir) {
-        rollbackState.webrootDirCreated = true;
-      }
     }
     logger.info("[ÉTAPE 2/11] Répertoires créés");
 
@@ -390,7 +330,7 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
       logger.info("[ÉTAPE 5/11] Pas de fichier legacy à supprimer");
     }
 
-    // 6. Générer le certificat si nécessaire (MODE WEBROOT - HAProxy reste actif)
+    // 6. Générer le certificat si nécessaire (MODE STANDALONE - HAProxy arrêté temporairement)
     const needsCert = !certExists || certSize === 0;
     logger.info("[ÉTAPE 6/11] Génération certificat nécessaire?", {
       needsCert,
@@ -399,173 +339,63 @@ export async function addHaproxyApp(params = {}, callbacks = {}) {
     if (needsCert) {
       sendProgress(
         6,
-        "Génération du certificat SSL en mode webroot (HAProxy reste actif)"
+        "Génération du certificat SSL en mode standalone (HAProxy sera arrêté temporairement)"
       );
 
-      // 6.1. Créer un backend HAProxy temporaire pour servir le webroot
-      // Ce backend servira les fichiers de validation ACME via HTTP
-      sendProgress(
-        6,
-        "Configuration du backend temporaire pour la validation ACME"
-      );
-
-      const webrootBackendName = `acme_challenge_backend_${app_slug}`;
-      const webrootBackendPath = `${haproxy_backend_dir}/${webrootBackendName}.cfg`;
-      rollbackState.webrootBackendPath = webrootBackendPath;
-
-      // Backend qui sert les fichiers statiques depuis le répertoire webroot
-      // On utilise un serveur HTTP simple (python3 -m http.server) ou nginx si disponible
-      // Pour simplifier, on va créer un backend qui pointe vers un serveur HTTP local
-      // qui servira le répertoire webroot
-
-      // Vérifier si un serveur HTTP simple est disponible pour servir le webroot
-      // On va utiliser python3 -m http.server sur un port temporaire
-      const webrootServerPort = 8888;
-
-      // Démarrer un serveur HTTP simple pour servir le webroot
-      // Note: Ce serveur sera arrêté après la génération du certificat
-      sendProgress(6, "Démarrage du serveur HTTP temporaire pour le webroot");
-
-      const startWebrootServerResult = await executeHostCommand(
-        `cd '${webroot_dir}' && nohup python3 -m http.server ${webrootServerPort} > /dev/null 2>&1 & echo $!`
-      );
-
-      let webrootServerPid = null;
-      if (
-        !startWebrootServerResult.error &&
-        startWebrootServerResult.stdout.trim()
-      ) {
-        webrootServerPid = startWebrootServerResult.stdout.trim();
-        logger.info(
-          `[ÉTAPE 6/11] Serveur HTTP webroot démarré (PID: ${webrootServerPid})`
+      // 6.1. Arrêter HAProxy si actif pour libérer le port 80
+      if (isHaproxyActive) {
+        sendProgress(6, "Arrêt de HAProxy pour libérer le port 80");
+        const stopResult = await executeHostCommand(
+          `systemctl stop ${haproxy_service_name}`
         );
+        if (stopResult.error) {
+          const errorMsg = `Erreur lors de l'arrêt de HAProxy: ${stopResult.stderr}`;
+          logger.error(`[ÉTAPE 6/11] ${errorMsg}`);
+          await handleErrorWithRollback(6, errorMsg);
+        }
+        rollbackState.haproxyWasStopped = true;
+        sendProgress(6, "HAProxy arrêté avec succès");
+        logger.info("[ÉTAPE 6/11] HAProxy arrêté");
       } else {
-        // Essayer avec python si python3 n'est pas disponible
-        const startWebrootServerResult2 = await executeHostCommand(
-          `cd '${webroot_dir}' && nohup python -m SimpleHTTPServer ${webrootServerPort} > /dev/null 2>&1 & echo $!`
+        sendProgress(6, "HAProxy déjà arrêté, pas besoin de l'arrêter");
+        logger.info(
+          "[ÉTAPE 6/11] HAProxy déjà arrêté, pas besoin de l'arrêter"
+        );
+      }
+
+      // 6.2. Attendre la libération du port 80
+      sendProgress(6, "Attente de la libération du port 80");
+      let port80Free = false;
+      for (let i = 0; i < 30; i++) {
+        logger.debug(
+          `[ÉTAPE 6/11] Vérification port 80 (tentative ${i + 1}/30)`
+        );
+        const portCheck = await executeHostCommand(
+          `netstat -tuln | grep ':80 ' || echo 'free'`
         );
         if (
-          !startWebrootServerResult2.error &&
-          startWebrootServerResult2.stdout.trim()
+          portCheck.stdout.includes("free") ||
+          !portCheck.stdout.includes(":80")
         ) {
-          webrootServerPid = startWebrootServerResult2.stdout.trim();
-          logger.info(
-            `[ÉTAPE 6/11] Serveur HTTP webroot démarré avec python (PID: ${webrootServerPid})`
-          );
-        } else {
-          // Si aucun serveur HTTP n'est disponible, on va utiliser nginx ou créer un backend différent
-          // Pour l'instant, on va essayer de continuer et voir si certbot peut fonctionner
-          logger.warn(
-            "[ÉTAPE 6/11] Impossible de démarrer un serveur HTTP pour le webroot"
-          );
+          port80Free = true;
+          sendProgress(6, "Port 80 libéré");
+          logger.info("[ÉTAPE 6/11] Port 80 libéré");
+          break;
         }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
 
-      // Créer le backend HAProxy pour servir le webroot
-      const webrootBackendContent = `# Backend temporaire pour la validation ACME (Let's Encrypt)
-# Ce backend sert les fichiers de validation depuis le répertoire webroot
-backend ${webrootBackendName}
-    mode http
-    option http-server-close
-    # Rediriger vers le serveur HTTP local qui sert le webroot
-    server webroot_server 127.0.0.1:${webrootServerPort} check
-`;
-
-      const webrootBackendEscaped = webrootBackendContent
-        .replace(/\\/g, "\\\\")
-        .replace(/'/g, "'\"'\"'")
-        .replace(/\$/g, "\\$")
-        .replace(/`/g, "\\`");
-
-      const webrootBackendResult = await executeHostCommand(
-        `printf '%s' '${webrootBackendEscaped}' > '${webrootBackendPath}' && chmod 644 '${webrootBackendPath}'`
-      );
-
-      if (webrootBackendResult.error) {
-        const errorMsg = `Erreur lors de la création du backend webroot: ${webrootBackendResult.stderr}`;
-        logger.error(`[ÉTAPE 6/11] ${errorMsg}`);
-        await handleErrorWithRollback(6, errorMsg, async () => {
-          // Arrêter le serveur HTTP si démarré
-          if (webrootServerPid) {
-            await executeHostCommand(
-              `kill ${webrootServerPid} 2>/dev/null || true`
-            );
-          }
-        });
+      if (!port80Free) {
+        logger.warn(
+          "[ÉTAPE 6/11] Le port 80 n'est pas libre, tentative de génération du certificat quand même"
+        );
+        sendProgress(
+          6,
+          "Attention: Le port 80 n'est pas complètement libre, tentative de génération quand même"
+        );
       }
-      rollbackState.webrootBackendCreated = true;
-      rollbackState.filesCreated.push(webrootBackendPath);
-      logger.info("[ÉTAPE 6/11] Backend webroot créé");
 
-      // 6.2. Créer une ACL temporaire pour router les requêtes ACME vers le backend webroot
-      sendProgress(
-        6,
-        "Configuration de l'ACL temporaire pour la validation ACME"
-      );
-
-      const webrootAclName = `acme_challenge_acl_${app_slug}`;
-      const webrootAclPath = `${haproxy_acl_dir}/${webrootAclName}.cfg`;
-      rollbackState.webrootAclPath = webrootAclPath;
-
-      // ACL qui capture les requêtes vers /.well-known/acme-challenge/
-      const webrootAclContent = `# ACL temporaire pour la validation ACME (Let's Encrypt)
-# Cette ACL route les requêtes de validation vers le backend webroot
-    acl ${webrootAclName} path_beg -i /.well-known/acme-challenge/
-    use_backend ${webrootBackendName} if ${webrootAclName}
-`;
-
-      const webrootAclEscaped = webrootAclContent
-        .replace(/\\/g, "\\\\")
-        .replace(/'/g, "'\"'\"'")
-        .replace(/\$/g, "\\$")
-        .replace(/`/g, "\\`");
-
-      const webrootAclResult = await executeHostCommand(
-        `printf '%s' '${webrootAclEscaped}' > '${webrootAclPath}' && chmod 644 '${webrootAclPath}'`
-      );
-
-      if (webrootAclResult.error) {
-        const errorMsg = `Erreur lors de la création de l'ACL webroot: ${webrootAclResult.stderr}`;
-        logger.error(`[ÉTAPE 6/11] ${errorMsg}`);
-        await handleErrorWithRollback(6, errorMsg, async () => {
-          // Arrêter le serveur HTTP si démarré
-          if (webrootServerPid) {
-            await executeHostCommand(
-              `kill ${webrootServerPid} 2>/dev/null || true`
-            );
-          }
-        });
-      }
-      rollbackState.webrootAclCreated = true;
-      rollbackState.filesCreated.push(webrootAclPath);
-      logger.info("[ÉTAPE 6/11] ACL webroot créée");
-
-      // 6.3. Recharger HAProxy pour activer le backend et l'ACL temporaires
-      sendProgress(
-        6,
-        "Rechargement de HAProxy pour activer la configuration temporaire"
-      );
-      const reloadResult = await executeHostCommand(
-        `systemctl reload ${haproxy_service_name}`
-      );
-      if (reloadResult.error) {
-        const errorMsg = `Erreur lors du rechargement de HAProxy: ${reloadResult.stderr}`;
-        logger.error(`[ÉTAPE 6/11] ${errorMsg}`);
-        await handleErrorWithRollback(6, errorMsg, async () => {
-          // Arrêter le serveur HTTP si démarré
-          if (webrootServerPid) {
-            await executeHostCommand(
-              `kill ${webrootServerPid} 2>/dev/null || true`
-            );
-          }
-        });
-      }
-      logger.info("[ÉTAPE 6/11] HAProxy rechargé avec succès");
-
-      // Attendre un peu pour que HAProxy soit prêt
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
-      // 6.4. Générer le certificat Let's Encrypt en mode webroot
+      // 6.3. Générer le certificat Let's Encrypt en mode standalone
       sendProgress(
         6,
         `Génération du certificat SSL pour ${app_domain} (cela peut prendre 1-2 minutes)`
@@ -578,10 +408,10 @@ backend ${webrootBackendName}
         sendProgress(6, "Génération du certificat en cours... (patientez)");
       }, 30000); // Toutes les 30 secondes
 
-      // Commande certbot en mode webroot
-      // --webroot-path spécifie le répertoire où certbot va placer les fichiers de validation
+      // Commande certbot en mode standalone
+      // --standalone fait que certbot écoute directement sur le port 80
       const certbotPromise = executeHostCommand(
-        `certbot certonly --webroot --webroot-path=${webroot_dir} --non-interactive --agree-tos --email ${letsencrypt_email} -d ${app_domain}`,
+        `certbot certonly --standalone --non-interactive --agree-tos --email ${letsencrypt_email} -d ${app_domain}`,
         { timeout: 300000 } // 5 minutes pour certbot
       );
 
@@ -620,13 +450,6 @@ backend ${webrootBackendName}
         // Envoyer l'erreur immédiatement via sendProgress pour que le frontend la reçoive
         sendProgress(6, `ERREUR: ${errorMsg}`);
 
-        // Arrêter le serveur HTTP si démarré
-        if (webrootServerPid) {
-          await executeHostCommand(
-            `kill ${webrootServerPid} 2>/dev/null || true`
-          );
-        }
-
         // Faire le rollback de manière asynchrone pour ne pas bloquer l'envoi de l'erreur
         // L'erreur sera envoyée par le handler avant que le rollback ne commence
         rollbackState.rollbackExecuted = true;
@@ -652,7 +475,7 @@ backend ${webrootBackendName}
           certbotResult.stderr ||
           certbotResult.stdout ||
           "Aucun détail disponible";
-        const errorMsg = `Certbot n'a pas généré le certificat pour ${app_domain}. Vérifiez DNS et que le domaine pointe vers ce serveur. Détails: ${errorDetails}`;
+        const errorMsg = `Certbot n'a pas généré le certificat pour ${app_domain}. Vérifiez DNS et port 80. Détails: ${errorDetails}`;
 
         logger.error("[ÉTAPE 6/11] Erreur certbot", {
           stdout: certbotResult.stdout,
@@ -662,13 +485,6 @@ backend ${webrootBackendName}
 
         // Envoyer l'erreur immédiatement via sendProgress pour que le frontend la reçoive
         sendProgress(6, `ERREUR: ${errorMsg}`);
-
-        // Arrêter le serveur HTTP si démarré
-        if (webrootServerPid) {
-          await executeHostCommand(
-            `kill ${webrootServerPid} 2>/dev/null || true`
-          );
-        }
 
         // Faire le rollback de manière asynchrone pour ne pas bloquer l'envoi de l'erreur
         // L'erreur sera envoyée par le handler avant que le rollback ne commence
@@ -685,41 +501,6 @@ backend ${webrootBackendName}
         stdout: certbotResult.stdout.substring(0, 500),
       });
       sendProgress(6, "Certificat SSL généré avec succès");
-
-      // Arrêter le serveur HTTP temporaire
-      if (webrootServerPid) {
-        logger.info(
-          `[ÉTAPE 6/11] Arrêt du serveur HTTP webroot (PID: ${webrootServerPid})`
-        );
-        await executeHostCommand(
-          `kill ${webrootServerPid} 2>/dev/null || true`
-        );
-      }
-
-      // 6.5. Supprimer les fichiers temporaires webroot (backend et ACL)
-      sendProgress(6, "Nettoyage des fichiers temporaires de validation");
-      await executeHostCommand(`rm -f '${webrootBackendPath}'`);
-      await executeHostCommand(`rm -f '${webrootAclPath}'`);
-
-      // Retirer des fichiers créés pour le rollback
-      rollbackState.filesCreated = rollbackState.filesCreated.filter(
-        (f) => f !== webrootBackendPath && f !== webrootAclPath
-      );
-      rollbackState.webrootBackendCreated = false;
-      rollbackState.webrootAclCreated = false;
-
-      // Recharger HAProxy pour supprimer les configs temporaires
-      const reloadAfterCleanupResult = await executeHostCommand(
-        `systemctl reload ${haproxy_service_name}`
-      );
-      if (reloadAfterCleanupResult.error) {
-        logger.warn(
-          "[ÉTAPE 6/11] Erreur lors du rechargement après nettoyage",
-          {
-            error: reloadAfterCleanupResult.stderr,
-          }
-        );
-      }
 
       // Concaténer fullchain + privkey en PEM HAProxy
       sendProgress(6, "Concaténation du certificat PEM");
@@ -746,6 +527,26 @@ backend ${webrootBackendName}
       }
       sendProgress(6, "Certificat SSL généré et configuré avec succès");
       logger.info("[ÉTAPE 6/11] Certificat généré avec succès");
+
+      // 6.4. Redémarrer HAProxy si il a été arrêté pour certbot
+      if (rollbackState.haproxyWasStopped && rollbackState.haproxyWasActive) {
+        sendProgress(
+          6,
+          "Redémarrage de HAProxy après génération du certificat"
+        );
+        const startResult = await executeHostCommand(
+          `systemctl start ${haproxy_service_name}`
+        );
+        if (startResult.error) {
+          const errorMsg = `Erreur lors du redémarrage de HAProxy: ${startResult.stderr}`;
+          logger.error(`[ÉTAPE 6/11] ${errorMsg}`);
+          await handleErrorWithRollback(6, errorMsg);
+        }
+        sendProgress(6, "HAProxy redémarré avec succès");
+        logger.info("[ÉTAPE 6/11] HAProxy redémarré avec succès");
+        // Réinitialiser le flag car HAProxy est maintenant démarré
+        rollbackState.haproxyWasStopped = false;
+      }
     } else {
       // 7. Régénérer le PEM si le certificat Let's Encrypt existe mais le PEM est vide
       sendProgress(6, "Vérification du certificat Let's Encrypt existant");
@@ -865,38 +666,58 @@ backend ${app_slug}_backend
     sendProgress(10, "Dates d'expiration du certificat récupérées");
 
     // 11. Recharger HAProxy pour activer la nouvelle configuration
-    sendProgress(
-      11,
-      "Rechargement de HAProxy pour activer la nouvelle configuration"
-    );
-    logger.info("[ÉTAPE 11/11] Rechargement de HAProxy");
+    // Seulement si HAProxy était actif au départ (et n'a pas été arrêté pour certbot)
+    if (isHaproxyActive && !rollbackState.haproxyWasStopped) {
+      sendProgress(
+        11,
+        "Rechargement de HAProxy pour activer la nouvelle configuration"
+      );
+      logger.info("[ÉTAPE 11/11] Rechargement de HAProxy");
 
-    const reloadResult = await executeHostCommand(
-      `systemctl reload ${haproxy_service_name}`
-    );
-    if (reloadResult.error) {
-      logger.warn(
-        "Erreur lors du rechargement de HAProxy, tentative de redémarrage",
-        {
-          error: reloadResult.stderr,
+      const reloadResult = await executeHostCommand(
+        `systemctl reload ${haproxy_service_name}`
+      );
+      if (reloadResult.error) {
+        logger.warn(
+          "Erreur lors du rechargement de HAProxy, tentative de redémarrage",
+          {
+            error: reloadResult.stderr,
+          }
+        );
+        sendProgress(
+          11,
+          "Rechargement échoué, tentative de redémarrage complet"
+        );
+        // Si reload échoue, essayer restart
+        const restartResult = await executeHostCommand(
+          `systemctl restart ${haproxy_service_name}`
+        );
+        if (restartResult.error) {
+          const errorMsg = `Erreur lors du redémarrage de HAProxy: ${restartResult.stderr}`;
+          logger.error(`[ÉTAPE 11/11] ${errorMsg}`);
+          await handleErrorWithRollback(11, errorMsg);
+        } else {
+          sendProgress(11, "HAProxy redémarré avec succès");
+          logger.info("[ÉTAPE 11/11] HAProxy redémarré avec succès (restart)");
         }
-      );
-      sendProgress(11, "Rechargement échoué, tentative de redémarrage complet");
-      // Si reload échoue, essayer restart
-      const restartResult = await executeHostCommand(
-        `systemctl restart ${haproxy_service_name}`
-      );
-      if (restartResult.error) {
-        const errorMsg = `Erreur lors du redémarrage de HAProxy: ${restartResult.stderr}`;
-        logger.error(`[ÉTAPE 11/11] ${errorMsg}`);
-        await handleErrorWithRollback(11, errorMsg);
       } else {
-        sendProgress(11, "HAProxy redémarré avec succès");
-        logger.info("[ÉTAPE 11/11] HAProxy redémarré avec succès (restart)");
+        sendProgress(11, "Configuration HAProxy rechargée avec succès");
+        logger.info(
+          "[ÉTAPE 11/11] Configuration HAProxy rechargée avec succès"
+        );
       }
+    } else if (!isHaproxyActive) {
+      sendProgress(
+        11,
+        "HAProxy n'est pas actif, pas de rechargement nécessaire"
+      );
+      logger.info(
+        "[ÉTAPE 11/11] HAProxy n'est pas actif, pas de rechargement nécessaire"
+      );
     } else {
-      sendProgress(11, "Configuration HAProxy rechargée avec succès");
-      logger.info("[ÉTAPE 11/11] Configuration HAProxy rechargée avec succès");
+      // HAProxy a été redémarré à l'étape 6, pas besoin de recharger
+      sendProgress(11, "HAProxy déjà redémarré à l'étape précédente");
+      logger.info("[ÉTAPE 11/11] HAProxy déjà redémarré à l'étape précédente");
     }
 
     const duration = Date.now() - startTime;
