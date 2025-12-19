@@ -3,8 +3,9 @@ FROM node:20-alpine
 WORKDIR /app
 
 # Installer les outils nécessaires pour parler au daemon Docker de l'hôte
-# et util-linux pour nsenter (permettre d'exécuter des commandes sur l'hôte)
-RUN apk add --no-cache docker-cli util-linux
+# util-linux pour nsenter (permettre d'exécuter des commandes sur l'hôte)
+# curl pour les requêtes HTTP (utilisé par Ansible pour vérifier l'installation)
+RUN apk add --no-cache docker-cli util-linux curl
 
 # Copier les manifestes npm
 COPY package.json package-lock.json* ./
