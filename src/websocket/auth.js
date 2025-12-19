@@ -200,9 +200,7 @@ export async function verifyRole(userId, allowedRoles, options = {}) {
 
   try {
     // Construire l'URL de l'API pour récupérer le rôle avec le companyId en query parameter
-    const apiUrl = `${API_BASE_URL}/api/users/${userId}/role?companyId=${encodeURIComponent(
-      companyId
-    )}`;
+    const apiUrl = `${API_BASE_URL}/api/users/${userId}/role?companyId=${companyId}`;
 
     logger.debug("Appel API pour récupérer le rôle", {
       apiUrl,
