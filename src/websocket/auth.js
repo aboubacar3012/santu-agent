@@ -217,8 +217,8 @@ export async function verifyRole(userId, allowedRoles, options = {}) {
     const response = await fetch(apiUrl, {
       method: "GET",
       headers,
-      // Timeout de 5 secondes pour éviter les blocages
-      signal: AbortSignal.timeout(5000),
+      // Timeout de 10 secondes pour éviter les blocages
+      signal: AbortSignal.timeout(10000),
     });
 
     // Vérifier le statut HTTP
