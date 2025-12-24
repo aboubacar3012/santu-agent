@@ -2,10 +2,24 @@ FROM node:20-alpine
 
 WORKDIR /app
 
+# Configurer les serveurs DNS pour améliorer la résolution DNS
+# Cela aide à résoudre les erreurs DNS transitoires lors de la construction
+RUN echo "nameserver 8.8.8.8" > /etc/resolv.conf && \
+    echo "nameserver 8.8.4.4" >> /etc/resolv.conf && \
+    echo "nameserver 1.1.1.1" >> /etc/resolv.conf || true
+
 # Installer les outils nécessaires pour parler au daemon Docker de l'hôte
 # util-linux pour nsenter (permettre d'exécuter des commandes sur l'hôte)
 # curl pour les requêtes HTTP (utilisé par Ansible pour vérifier l'installation)
-RUN apk add --no-cache docker-cli util-linux curl
+# Ajout de retries pour gérer les erreurs DNS transitoires
+RUN apk update --no-cache && \
+    apk add --no-cache docker-cli util-linux curl || \
+    (sleep 5 && apk update --no-cache && apk add --no-cache docker-cli util-linux curl) || \
+    (sleep 10 && apk update --no-cache && apk add --no-cache docker-cli util-linux curl) || \
+    (echo "Tentative avec miroir alternatif..." && \
+    sed -i 's/dl-cdn.alpinelinux.org/mirror.rackspace.com\/alpine/g' /etc/apk/repositories && \
+    apk update --no-cache && \
+    apk add --no-cache docker-cli util-linux curl)
 
 # Copier les manifestes npm
 COPY package.json package-lock.json* ./
