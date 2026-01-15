@@ -414,7 +414,7 @@ export async function getCertificateHostname() {
 }
 
 /**
- * Valide que les 3 hostnames (reçu, serveur, certificat) sont identiques
+ * Valide que le hostname reçu correspond au serveur et que le certificat contient le hostname reçu
  * @param {string} receivedHostname - Hostname reçu (depuis le frontend)
  * @param {string} serverHostname - Hostname du serveur (via hostname)
  * @param {string} certificateHostname - Hostname du certificat Let's Encrypt
@@ -457,15 +457,19 @@ export function validateHostnameConsistency(
     };
   }
 
-  // Vérifier que les 3 hostnames sont identiques
-  if (
-    normalizedReceived !== normalizedServer ||
-    normalizedReceived !== normalizedCertificate ||
-    normalizedServer !== normalizedCertificate
-  ) {
+  // Vérifier que le hostname reçu correspond au hostname du serveur (correspondance exacte)
+  if (normalizedReceived !== normalizedServer) {
     return {
       valid: false,
-      error: `Incohérence des hostnames: reçu="${normalizedReceived}", serveur="${normalizedServer}", certificat="${normalizedCertificate}"`,
+      error: `Incohérence des hostnames: reçu="${normalizedReceived}", serveur="${normalizedServer}"`,
+    };
+  }
+
+  // Vérifier que le certificat contient le hostname reçu (contient, pas égal)
+  if (!normalizedCertificate.includes(normalizedReceived)) {
+    return {
+      valid: false,
+      error: `Le certificat "${normalizedCertificate}" ne contient pas le hostname reçu "${normalizedReceived}"`,
     };
   }
 
