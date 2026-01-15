@@ -168,44 +168,6 @@ export function prepareUfwCommand(command) {
 }
 
 /**
- * Trouve le numéro de la règle "deny anywhere" dans la liste des règles UFW
- * @returns {Promise<number|null>} Numéro de la règle ou null si non trouvée
- */
-export async function findDenyAnywhereRuleNumber() {
-  try {
-    const nsenterCommand =
-      "nsenter -t 1 -m -u -i -n -p -- sh -c 'ufw status numbered'";
-    const result = await executeCommand(nsenterCommand, {
-      timeout: 10000,
-    });
-
-    if (result.error || !result.stdout) {
-      return null;
-    }
-
-    const lines = result.stdout.split("\n");
-    for (const line of lines) {
-      const rule = parseUfwStatusLine(line);
-      if (
-        rule &&
-        rule.action === "DENY" &&
-        (rule.source === "Anywhere" ||
-          rule.source.toLowerCase().includes("anywhere"))
-      ) {
-        return rule.number;
-      }
-    }
-
-    return null;
-  } catch (error) {
-    logger.debug("Erreur lors de la recherche de la règle deny anywhere", {
-      error: error.message,
-    });
-    return null;
-  }
-}
-
-/**
  * Exécute une commande UFW via nsenter
  * @param {string} command - Commande UFW à exécuter
  * @returns {Promise<Object>} Résultat de l'exécution
@@ -218,17 +180,3 @@ export async function executeUfwCommand(command) {
     timeout: 30000,
   });
 }
-
-/**
- * Vérifie si une commande est une commande d'ajout (allow/deny mais pas delete)
- * @param {string} command - Commande à vérifier
- * @returns {boolean} True si c'est une commande d'ajout
- */
-export function isAddCommand(command) {
-  const cleaned = cleanUfwCommand(command).toLowerCase();
-  return (
-    (cleaned.includes("allow") || cleaned.includes("deny")) &&
-    !cleaned.includes("delete")
-  );
-}
-

@@ -6,19 +6,11 @@
 
 import { logger } from "../../../shared/logger.js";
 import { validateUfwParams } from "../validator.js";
-import {
-  cleanUfwCommand,
-  prepareUfwCommand,
-  findDenyAnywhereRuleNumber,
-  executeUfwCommand,
-  isAddCommand,
-} from "./utils.js";
+import { prepareUfwCommand, executeUfwCommand } from "./utils.js";
 import { requireRole } from "../../../websocket/auth.js";
 
 /**
  * Applique des règles UFW en exécutant une série de commandes
- * Pour éviter que les nouvelles règles se retrouvent en bas, on supprime
- * temporairement la règle "deny anywhere" avant d'ajouter, puis on la réajoute après.
  * @param {Object} params - Paramètres contenant les commandes à exécuter
  * @param {string[]} params.commands - Tableau de commandes UFW à exécuter
  * @param {Object} [callbacks] - Callbacks et contexte
@@ -45,32 +37,6 @@ export async function applyUfwRules(params = {}, callbacks = {}) {
     logger.debug("Début de l'application des règles UFW", {
       commandCount: commands.length,
     });
-
-    // Détecter si on a des commandes d'ajout (allow/deny mais pas delete)
-    const hasAddCommands = commands.some((cmd) => isAddCommand(cmd));
-
-    // Si on ajoute des règles, trouver et supprimer temporairement "deny anywhere"
-    let denyAnywhereNumber = null;
-    if (hasAddCommands) {
-      denyAnywhereNumber = await findDenyAnywhereRuleNumber();
-      if (denyAnywhereNumber !== null) {
-        logger.debug(
-          `Règle deny anywhere trouvée (numéro ${denyAnywhereNumber}), suppression temporaire`
-        );
-        const deleteCommand = `ufw --force delete ${denyAnywhereNumber}`;
-        const deleteResult = await executeUfwCommand(deleteCommand);
-        if (deleteResult.error) {
-          logger.warn(
-            "Impossible de supprimer temporairement la règle deny anywhere",
-            {
-              error: deleteResult.error.message || deleteResult.error,
-              stderr: deleteResult.stderr,
-            }
-          );
-          // Continuer quand même, ce n'est pas bloquant
-        }
-      }
-    }
 
     const results = [];
 
@@ -142,24 +108,6 @@ export async function applyUfwRules(params = {}, callbacks = {}) {
           error: error.message || String(error),
         });
       }
-    }
-
-    // Si on avait supprimé "deny anywhere", la réajouter à la fin
-    // Mais ne pas l'inclure dans les résultats retournés (c'est une opération interne)
-    if (denyAnywhereNumber !== null && hasAddCommands) {
-      logger.debug("Réajout de la règle deny anywhere à la fin");
-      const denyCommand = "ufw deny from any to any";
-      const denyResult = await executeUfwCommand(denyCommand);
-
-      if (denyResult.error) {
-        logger.warn("Impossible de réajouter la règle deny anywhere", {
-          error: denyResult.error.message || denyResult.error,
-          stderr: denyResult.stderr,
-        });
-      } else {
-        logger.debug("Règle deny anywhere réajoutée avec succès");
-      }
-      // Ne pas ajouter cette commande automatique aux résultats
     }
 
     // Filtrer les résultats pour ne retourner que les commandes utilisateur
