@@ -5,6 +5,10 @@ import { handleMessage } from "./handlers.js";
 import { createError } from "../shared/messages.js";
 import { verifyToken } from "./auth.js";
 import { executeCommand } from "../shared/executor.js";
+import {
+  getCertificateHostname,
+  validateHostnameConsistency,
+} from "../modules/metadata/actions/utils.js";
 
 const DEFAULT_HEALTHCHECK_PATH = "/healthcheck";
 
@@ -205,6 +209,44 @@ export async function createFrontendServer({
       normalizedRequestedHostname,
       normalizedExpectedHostname,
     });
+
+    // ============================================
+    // ÉTAPE 2.5 : Vérifier la cohérence des hostnames (reçu, serveur, certificat)
+    // ============================================
+    try {
+      const certificateHostname = await getCertificateHostname();
+      const validation = validateHostnameConsistency(
+        requestedServerHostname,
+        hostname,
+        certificateHostname
+      );
+
+      if (!validation.valid) {
+        logger.error("Incohérence des hostnames détectée", {
+          receivedHostname: requestedServerHostname,
+          serverHostname: hostname,
+          certificateHostname: certificateHostname || "non disponible",
+          error: validation.error,
+        });
+        ws.close(1008, validation.error || "Incohérence des hostnames");
+        return;
+      }
+
+      logger.debug("Cohérence des hostnames vérifiée", {
+        receivedHostname: requestedServerHostname,
+        serverHostname: hostname,
+        certificateHostname,
+      });
+    } catch (error) {
+      logger.error(
+        "Erreur lors de la vérification de cohérence des hostnames",
+        {
+          error: error.message,
+        }
+      );
+      // Ne pas bloquer la connexion si la vérification échoue, mais logger l'erreur
+      // On pourrait aussi choisir de bloquer avec: ws.close(1008, "Erreur lors de la vérification des hostnames");
+    }
 
     // ============================================
     // ÉTAPE 3 : Vérifier le token localement

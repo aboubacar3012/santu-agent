@@ -356,3 +356,120 @@ export async function getSshPort() {
     return 22;
   }
 }
+
+/**
+ * Récupère le hostname depuis les certificats Let's Encrypt
+ * @returns {Promise<string|null>} Hostname du certificat ou null si non trouvé/erreur
+ */
+export async function getCertificateHostname() {
+  try {
+    // Utiliser nsenter pour exécuter certbot certificates sur l'hôte
+    const result = await executeHostCommand("certbot certificates", {
+      timeout: 10000,
+    });
+
+    if (result.error || !result.stdout) {
+      logger.debug("Impossible de récupérer les certificats Let's Encrypt", {
+        error: result.error,
+        stderr: result.stderr,
+      });
+      return null;
+    }
+
+    // Parser la sortie de certbot certificates
+    // Format attendu:
+    // Certificate Name: vps-old-dev-node-96938b8e.elyamaje.com
+    //   Domains: vps-old-dev-node-96938b8e.elyamaje.com
+    const lines = result.stdout.split("\n");
+    let certificateName = null;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      
+      // Chercher la ligne "Certificate Name:"
+      if (line.startsWith("Certificate Name:")) {
+        const match = line.match(/Certificate Name:\s*(.+)/);
+        if (match && match[1]) {
+          certificateName = match[1].trim();
+          break;
+        }
+      }
+    }
+
+    if (certificateName) {
+      logger.debug("Hostname du certificat récupéré", {
+        certificateHostname: certificateName,
+      });
+      return certificateName;
+    }
+
+    logger.debug("Aucun certificat Let's Encrypt trouvé");
+    return null;
+  } catch (error) {
+    logger.error("Erreur lors de la récupération du hostname du certificat", {
+      error: error.message,
+    });
+    return null;
+  }
+}
+
+/**
+ * Valide que les 3 hostnames (reçu, serveur, certificat) sont identiques
+ * @param {string} receivedHostname - Hostname reçu (depuis le frontend)
+ * @param {string} serverHostname - Hostname du serveur (via hostname)
+ * @param {string} certificateHostname - Hostname du certificat Let's Encrypt
+ * @returns {{valid: boolean, error?: string}} Résultat de la validation
+ */
+export function validateHostnameConsistency(
+  receivedHostname,
+  serverHostname,
+  certificateHostname
+) {
+  // Normaliser les hostnames (trim et lowercase)
+  const normalize = (hostname) => {
+    if (!hostname) return null;
+    return hostname.trim().toLowerCase();
+  };
+
+  const normalizedReceived = normalize(receivedHostname);
+  const normalizedServer = normalize(serverHostname);
+  const normalizedCertificate = normalize(certificateHostname);
+
+  // Vérifier que tous les hostnames sont présents
+  if (!normalizedReceived) {
+    return {
+      valid: false,
+      error: "Hostname reçu manquant",
+    };
+  }
+
+  if (!normalizedServer) {
+    return {
+      valid: false,
+      error: "Hostname du serveur non disponible",
+    };
+  }
+
+  if (!normalizedCertificate) {
+    return {
+      valid: false,
+      error: "Hostname du certificat Let's Encrypt non disponible",
+    };
+  }
+
+  // Vérifier que les 3 hostnames sont identiques
+  if (
+    normalizedReceived !== normalizedServer ||
+    normalizedReceived !== normalizedCertificate ||
+    normalizedServer !== normalizedCertificate
+  ) {
+    return {
+      valid: false,
+      error: `Incohérence des hostnames: reçu="${normalizedReceived}", serveur="${normalizedServer}", certificat="${normalizedCertificate}"`,
+    };
+  }
+
+  return {
+    valid: true,
+  };
+}
