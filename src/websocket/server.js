@@ -213,40 +213,44 @@ export async function createFrontendServer({
     // ============================================
     // ÉTAPE 2.5 : Vérifier la cohérence des hostnames (reçu, serveur, certificat)
     // ============================================
-    try {
-      const certificateHostname = await getCertificateHostname();
-      const validation = validateHostnameConsistency(
-        requestedServerHostname,
-        hostname,
-        certificateHostname
-      );
+    // Vérification asynchrone en arrière-plan (non-bloquante)
+    // Si la validation échoue, on ferme la connexion mais on ne bloque pas l'initialisation
+    (async () => {
+      try {
+        const certificateHostname = await getCertificateHostname();
+        const validation = validateHostnameConsistency(
+          requestedServerHostname,
+          hostname,
+          certificateHostname
+        );
 
-      if (!validation.valid) {
-        logger.error("Incohérence des hostnames détectée", {
+        if (!validation.valid) {
+          logger.error("Incohérence des hostnames détectée", {
+            receivedHostname: requestedServerHostname,
+            serverHostname: hostname,
+            certificateHostname: certificateHostname || "non disponible",
+            error: validation.error,
+          });
+          // Fermer la connexion de manière asynchrone
+          ws.close(1008, validation.error || "Incohérence des hostnames");
+          return;
+        }
+
+        logger.debug("Cohérence des hostnames vérifiée", {
           receivedHostname: requestedServerHostname,
           serverHostname: hostname,
-          certificateHostname: certificateHostname || "non disponible",
-          error: validation.error,
+          certificateHostname,
         });
-        ws.close(1008, validation.error || "Incohérence des hostnames");
-        return;
+      } catch (error) {
+        logger.error(
+          "Erreur lors de la vérification de cohérence des hostnames",
+          {
+            error: error.message,
+          }
+        );
+        // Ne pas bloquer la connexion si la vérification échoue, mais logger l'erreur
       }
-
-      logger.debug("Cohérence des hostnames vérifiée", {
-        receivedHostname: requestedServerHostname,
-        serverHostname: hostname,
-        certificateHostname,
-      });
-    } catch (error) {
-      logger.error(
-        "Erreur lors de la vérification de cohérence des hostnames",
-        {
-          error: error.message,
-        }
-      );
-      // Ne pas bloquer la connexion si la vérification échoue, mais logger l'erreur
-      // On pourrait aussi choisir de bloquer avec: ws.close(1008, "Erreur lors de la vérification des hostnames");
-    }
+    })();
 
     // ============================================
     // ÉTAPE 3 : Vérifier le token localement
