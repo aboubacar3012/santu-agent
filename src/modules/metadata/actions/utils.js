@@ -358,10 +358,11 @@ export async function getSshPort() {
 }
 
 /**
- * Récupère le hostname depuis les certificats Let's Encrypt
+ * Récupère le hostname depuis les certificats Let's Encrypt qui correspond au hostname du serveur
+ * @param {string} [serverHostname] - Hostname du serveur pour trouver le bon certificat
  * @returns {Promise<string|null>} Hostname du certificat ou null si non trouvé/erreur
  */
-export async function getCertificateHostname() {
+export async function getCertificateHostname(serverHostname = null) {
   try {
     // Utiliser nsenter pour exécuter certbot certificates sur l'hôte
     const result = await executeHostCommand("certbot certificates", {
@@ -380,31 +381,116 @@ export async function getCertificateHostname() {
     // Format attendu:
     // Certificate Name: vps-old-dev-node-96938b8e.elyamaje.com
     //   Domains: vps-old-dev-node-96938b8e.elyamaje.com
+    //   Expiry Date: 2026-02-15 12:34:56+00:00 (VALID: 30 days)
+    //   Certificate Path: /etc/letsencrypt/live/vps-old-dev-node-96938b8e.elyamaje.com/fullchain.pem
+    //   Private Key Path: /etc/letsencrypt/live/vps-old-dev-node-96938b8e.elyamaje.com/privkey.pem
     const lines = result.stdout.split("\n");
-    let certificateName = null;
+    let currentCertificate = null;
+    let currentDomains = null;
+    const certificates = [];
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
-      
+
       // Chercher la ligne "Certificate Name:"
       if (line.startsWith("Certificate Name:")) {
+        // Si on avait un certificat précédent, l'ajouter à la liste
+        if (currentCertificate) {
+          certificates.push({
+            name: currentCertificate,
+            domains: currentDomains || [],
+          });
+        }
+
         const match = line.match(/Certificate Name:\s*(.+)/);
         if (match && match[1]) {
-          certificateName = match[1].trim();
-          break;
+          currentCertificate = match[1].trim();
+          currentDomains = [];
+        }
+      }
+      // Chercher la ligne "Domains:" qui liste les domaines du certificat
+      else if (line.startsWith("Domains:") && currentCertificate) {
+        const domainsMatch = line.match(/Domains:\s*(.+)/);
+        if (domainsMatch && domainsMatch[1]) {
+          // Les domaines peuvent être séparés par des espaces
+          currentDomains = domainsMatch[1]
+            .trim()
+            .split(/\s+/)
+            .map((d) => d.trim())
+            .filter((d) => d.length > 0);
         }
       }
     }
 
-    if (certificateName) {
-      logger.debug("Hostname du certificat récupéré", {
-        certificateHostname: certificateName,
+    // Ajouter le dernier certificat trouvé
+    if (currentCertificate) {
+      certificates.push({
+        name: currentCertificate,
+        domains: currentDomains || [],
       });
-      return certificateName;
     }
 
-    logger.debug("Aucun certificat Let's Encrypt trouvé");
-    return null;
+    // Si aucun certificat trouvé
+    if (certificates.length === 0) {
+      logger.debug("Aucun certificat Let's Encrypt trouvé");
+      return null;
+    }
+
+    // Si un hostname de serveur est fourni, chercher le certificat qui correspond
+    if (serverHostname) {
+      const normalizedServerHostname = serverHostname.trim().toLowerCase();
+
+      for (const cert of certificates) {
+        // Vérifier si le nom du certificat contient le hostname
+        const normalizedCertName = cert.name.toLowerCase();
+        if (normalizedCertName.includes(normalizedServerHostname)) {
+          logger.debug(
+            "Certificat trouvé correspondant au hostname du serveur",
+            {
+              certificateHostname: cert.name,
+              serverHostname: serverHostname,
+              domains: cert.domains,
+            }
+          );
+          return cert.name;
+        }
+
+        // Vérifier si un des domaines contient le hostname
+        for (const domain of cert.domains) {
+          const normalizedDomain = domain.toLowerCase();
+          if (normalizedDomain.includes(normalizedServerHostname)) {
+            logger.debug(
+              "Certificat trouvé via domaine correspondant au hostname",
+              {
+                certificateHostname: cert.name,
+                serverHostname: serverHostname,
+                matchingDomain: domain,
+                allDomains: cert.domains,
+              }
+            );
+            return cert.name;
+          }
+        }
+      }
+
+      // Si aucun certificat ne correspond, logger un avertissement et retourner le premier
+      logger.warn(
+        "Aucun certificat ne correspond au hostname du serveur, utilisation du premier certificat",
+        {
+          serverHostname: serverHostname,
+          availableCertificates: certificates.map((c) => c.name),
+        }
+      );
+    }
+
+    // Si aucun hostname fourni ou aucun match, retourner le premier certificat
+    const firstCert = certificates[0];
+    logger.debug("Hostname du certificat récupéré (premier trouvé)", {
+      certificateHostname: firstCert.name,
+      domains: firstCert.domains,
+      serverHostname: serverHostname || "non fourni",
+    });
+    return firstCert.name;
   } catch (error) {
     logger.error("Erreur lors de la récupération du hostname du certificat", {
       error: error.message,

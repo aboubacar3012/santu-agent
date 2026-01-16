@@ -217,7 +217,8 @@ export async function createFrontendServer({
     // Si la validation échoue, on ferme la connexion mais on ne bloque pas l'initialisation
     (async () => {
       try {
-        const certificateHostname = await getCertificateHostname();
+        // Passer le hostname du serveur pour trouver le bon certificat
+        const certificateHostname = await getCertificateHostname(hostname);
         const validation = validateHostnameConsistency(
           requestedServerHostname,
           hostname,
