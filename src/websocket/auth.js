@@ -21,8 +21,7 @@ import { logger } from "../shared/logger.js";
  * URL de base de l'API backend pour les vérifications de rôles
  * Cette URL est utilisée pour récupérer le rôle d'un utilisateur
  */
-const API_BASE_URL =
-  process.env.API_BASE_URL || "https://dev.devoups.elyamaje.com";
+const API_BASE_URL = process.env.API_BASE_URL || "https://devoups.elyamaje.com";
 
 /**
  * Vérifie un token simple (Base64 JSON) localement sans appel API ni signature.
