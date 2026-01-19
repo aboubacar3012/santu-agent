@@ -237,11 +237,23 @@ export async function createFrontendServer({
           return;
         }
 
-        logger.debug("Cohérence des hostnames vérifiée", {
-          receivedHostname: requestedServerHostname,
-          serverHostname: hostname,
-          certificateHostname,
-        });
+        // Logger différemment selon si le certificat est disponible ou non
+        if (!certificateHostname) {
+          logger.debug(
+            "Cohérence des hostnames vérifiée (certificat non disponible)",
+            {
+              receivedHostname: requestedServerHostname,
+              serverHostname: hostname,
+              note: "Le certificat Let's Encrypt n'est pas disponible, mais la correspondance hostname reçu/serveur est valide",
+            }
+          );
+        } else {
+          logger.debug("Cohérence des hostnames vérifiée", {
+            receivedHostname: requestedServerHostname,
+            serverHostname: hostname,
+            certificateHostname,
+          });
+        }
       } catch (error) {
         logger.error(
           "Erreur lors de la vérification de cohérence des hostnames",

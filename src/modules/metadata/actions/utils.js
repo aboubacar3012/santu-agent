@@ -536,13 +536,6 @@ export function validateHostnameConsistency(
     };
   }
 
-  if (!normalizedCertificate) {
-    return {
-      valid: false,
-      error: "Hostname du certificat Let's Encrypt non disponible",
-    };
-  }
-
   // Vérifier que le hostname reçu correspond au hostname du serveur (correspondance exacte)
   if (normalizedReceived !== normalizedServer) {
     return {
@@ -551,7 +544,16 @@ export function validateHostnameConsistency(
     };
   }
 
-  // Vérifier que le certificat contient le hostname reçu (contient, pas égal)
+  // Si le certificat n'est pas disponible, on accepte quand même la connexion
+  // car la correspondance entre hostname reçu et serveur est suffisante
+  if (!normalizedCertificate) {
+    return {
+      valid: true,
+      // On retourne valid: true mais on peut logger un avertissement ailleurs
+    };
+  }
+
+  // Si le certificat est disponible, vérifier qu'il contient le hostname reçu
   if (!normalizedCertificate.includes(normalizedReceived)) {
     return {
       valid: false,
