@@ -122,11 +122,45 @@ export async function killStaleAptProcesses() {
     if (killedAny) {
       // Attendre un peu pour que les locks soient libérés
       await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      // Réparer le système dpkg après avoir tué des processus
+      await repairDpkg();
     }
 
     return true;
   } catch (error) {
     logger.error("Erreur lors de la vérification des processus apt/dpkg", {
+      error: error.message,
+    });
+    return false;
+  }
+}
+
+/**
+ * Répare le système dpkg après une interruption
+ * Exécute dpkg --configure -a pour corriger les problèmes
+ * @returns {Promise<boolean>} True si la réparation a réussi ou n'était pas nécessaire
+ */
+export async function repairDpkg() {
+  try {
+    logger.info("Réparation du système dpkg...");
+
+    const repairResult = await executeHostCommand("dpkg --configure -a", {
+      timeout: 300000, // 5 minutes
+    });
+
+    if (repairResult.error) {
+      // Même en cas d'erreur, on continue car certaines erreurs peuvent être normales
+      logger.warn("Avertissements lors de la réparation dpkg", {
+        stderr: repairResult.stderr,
+      });
+    } else {
+      logger.info("Réparation dpkg terminée avec succès");
+    }
+
+    return true;
+  } catch (error) {
+    logger.error("Erreur lors de la réparation dpkg", {
       error: error.message,
     });
     return false;

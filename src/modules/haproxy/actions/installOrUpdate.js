@@ -7,7 +7,7 @@
 import { logger } from "../../../shared/logger.js";
 import { validateHaproxyParams } from "../validator.js";
 import { executeHostCommand } from "./utils.js";
-import { killStaleAptProcesses } from "../../../shared/packages.js";
+import { killStaleAptProcesses, repairDpkg } from "../../../shared/packages.js";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -87,10 +87,27 @@ export async function installOrUpdateHaproxy(params = {}, callbacks = {}) {
       });
     }
 
-    const installResult = await executeHostCommand(
+    let installResult = await executeHostCommand(
       "apt-get install -y haproxy ssl-cert openssl certbot cron",
       { timeout: 600000 } // 10 minutes
     );
+
+    // Si erreur "dpkg was interrupted", réparer et réessayer
+    if (
+      installResult.error &&
+      installResult.stderr.includes("dpkg was interrupted")
+    ) {
+      logger.warn("Détection d'une interruption dpkg, réparation en cours...");
+      await repairDpkg();
+
+      // Réessayer l'installation après réparation
+      logger.info("Nouvelle tentative d'installation après réparation");
+      installResult = await executeHostCommand(
+        "apt-get install -y haproxy ssl-cert openssl certbot cron",
+        { timeout: 600000 } // 10 minutes
+      );
+    }
+
     if (installResult.error) {
       throw new Error(
         `Erreur lors de l'installation des packages: ${installResult.stderr}`
