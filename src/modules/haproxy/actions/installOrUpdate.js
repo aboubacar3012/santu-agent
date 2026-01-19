@@ -7,6 +7,7 @@
 import { logger } from "../../../shared/logger.js";
 import { validateHaproxyParams } from "../validator.js";
 import { executeHostCommand } from "./utils.js";
+import { killStaleAptProcesses } from "../../../shared/packages.js";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -65,6 +66,17 @@ export async function installOrUpdateHaproxy(params = {}, callbacks = {}) {
 
     // ÉTAPE 1: Installation des packages
     logger.info("Étape 1: Installation des packages");
+
+    // Vérifier et tuer les processus apt/dpkg bloqués avant de continuer
+    try {
+      await killStaleAptProcesses();
+    } catch (error) {
+      logger.warn("Erreur lors de la vérification des processus apt/dpkg", {
+        error: error.message,
+      });
+      // Continuer quand même
+    }
+
     const updateResult = await executeHostCommand(
       "apt-get update",
       { timeout: 300000 } // 5 minutes
