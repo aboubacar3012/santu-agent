@@ -500,17 +500,12 @@ export async function getCertificateHostname(serverHostname = null) {
 }
 
 /**
- * Valide que le hostname reçu correspond au serveur et que le certificat contient le hostname reçu
+ * Valide que le hostname reçu correspond au hostname du serveur
  * @param {string} receivedHostname - Hostname reçu (depuis le frontend)
  * @param {string} serverHostname - Hostname du serveur (via hostname)
- * @param {string} certificateHostname - Hostname du certificat Let's Encrypt
  * @returns {{valid: boolean, error?: string}} Résultat de la validation
  */
-export function validateHostnameConsistency(
-  receivedHostname,
-  serverHostname,
-  certificateHostname
-) {
+export function validateHostnameConsistency(receivedHostname, serverHostname) {
   // Normaliser les hostnames (trim et lowercase)
   const normalize = (hostname) => {
     if (!hostname) return null;
@@ -519,7 +514,6 @@ export function validateHostnameConsistency(
 
   const normalizedReceived = normalize(receivedHostname);
   const normalizedServer = normalize(serverHostname);
-  const normalizedCertificate = normalize(certificateHostname);
 
   // Vérifier que tous les hostnames sont présents
   if (!normalizedReceived) {
@@ -541,23 +535,6 @@ export function validateHostnameConsistency(
     return {
       valid: false,
       error: `Incohérence des hostnames: reçu="${normalizedReceived}", serveur="${normalizedServer}"`,
-    };
-  }
-
-  // Si le certificat n'est pas disponible, on accepte quand même la connexion
-  // car la correspondance entre hostname reçu et serveur est suffisante
-  if (!normalizedCertificate) {
-    return {
-      valid: true,
-      // On retourne valid: true mais on peut logger un avertissement ailleurs
-    };
-  }
-
-  // Si le certificat est disponible, vérifier qu'il contient le hostname reçu
-  if (!normalizedCertificate.includes(normalizedReceived)) {
-    return {
-      valid: false,
-      error: `Le certificat "${normalizedCertificate}" ne contient pas le hostname reçu "${normalizedReceived}"`,
     };
   }
 

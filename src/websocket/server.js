@@ -5,10 +5,7 @@ import { handleMessage } from "./handlers.js";
 import { createError } from "../shared/messages.js";
 import { verifyToken } from "./auth.js";
 import { executeCommand } from "../shared/executor.js";
-import {
-  getCertificateHostname,
-  validateHostnameConsistency,
-} from "../modules/metadata/actions/utils.js";
+import { validateHostnameConsistency } from "../modules/metadata/actions/utils.js";
 
 const DEFAULT_HEALTHCHECK_PATH = "/healthcheck";
 
@@ -211,25 +208,21 @@ export async function createFrontendServer({
     });
 
     // ============================================
-    // ÉTAPE 2.5 : Vérifier la cohérence des hostnames (reçu, serveur, certificat)
+    // ÉTAPE 2.5 : Vérifier la cohérence des hostnames (reçu vs serveur)
     // ============================================
     // Vérification asynchrone en arrière-plan (non-bloquante)
     // Si la validation échoue, on ferme la connexion mais on ne bloque pas l'initialisation
     (async () => {
       try {
-        // Passer le hostname du serveur pour trouver le bon certificat
-        const certificateHostname = await getCertificateHostname(hostname);
         const validation = validateHostnameConsistency(
           requestedServerHostname,
-          hostname,
-          certificateHostname
+          hostname
         );
 
         if (!validation.valid) {
           logger.error("Incohérence des hostnames détectée", {
             receivedHostname: requestedServerHostname,
             serverHostname: hostname,
-            certificateHostname: certificateHostname || "non disponible",
             error: validation.error,
           });
           // Fermer la connexion de manière asynchrone
@@ -237,23 +230,10 @@ export async function createFrontendServer({
           return;
         }
 
-        // Logger différemment selon si le certificat est disponible ou non
-        if (!certificateHostname) {
-          logger.debug(
-            "Cohérence des hostnames vérifiée (certificat non disponible)",
-            {
-              receivedHostname: requestedServerHostname,
-              serverHostname: hostname,
-              note: "Le certificat Let's Encrypt n'est pas disponible, mais la correspondance hostname reçu/serveur est valide",
-            }
-          );
-        } else {
-          logger.debug("Cohérence des hostnames vérifiée", {
-            receivedHostname: requestedServerHostname,
-            serverHostname: hostname,
-            certificateHostname,
-          });
-        }
+        logger.debug("Cohérence des hostnames vérifiée", {
+          receivedHostname: requestedServerHostname,
+          serverHostname: hostname,
+        });
       } catch (error) {
         logger.error(
           "Erreur lors de la vérification de cohérence des hostnames",
