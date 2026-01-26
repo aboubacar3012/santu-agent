@@ -343,6 +343,24 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       logger.info("Étape 5: Création de la tâche cron");
       const cronName = "docker-logs-backup";
       const cronFile = `/etc/cron.d/agent-cron-${cronName}`;
+
+      // Supprimer l'ancien fichier cron s'il existe pour éviter les problèmes de format
+      const cronExists = await hostFileExists(cronFile);
+      if (cronExists) {
+        logger.info("Suppression de l'ancien fichier cron avant recréation");
+        const deleteCronResult = await executeHostCommand(
+          `rm -f '${cronFile}'`,
+        );
+        if (deleteCronResult.error) {
+          logger.warn(
+            "Erreur lors de la suppression de l'ancien fichier cron",
+            {
+              stderr: deleteCronResult.stderr,
+            },
+          );
+        }
+      }
+
       // Le script Python lit directement le fichier AWS via source
       // Utiliser bash -c pour que source fonctionne (cron utilise /bin/sh par défaut)
       const cronCommand = `bash -c "source ${awsEnvFile} && python3 ${scriptPath} --env ${env}" >> /var/log/docker-log-collector.log 2>&1`;
