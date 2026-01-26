@@ -366,7 +366,7 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
             weekday: "*",
           },
           user: "root",
-          description: "Backup des logs Docker vers S3",
+          description: "Backup des logs des containers Docker vers S3",
           enabled: true,
         },
         callbacks,
@@ -407,7 +407,7 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       return {
         success: true,
         enabled: true,
-        message: "Backup des logs activé avec succès",
+        message: "Backup des logs des containers Docker activé avec succès",
         awsEnvFile,
         scriptPath,
         cronFile,
@@ -415,7 +415,7 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
     } else {
       // ========== DÉSACTIVATION ==========
 
-      logger.info("Désactivation du backup des logs");
+      logger.info("Désactivation du backup des logs des containers Docker");
 
       // 1. Supprimer la tâche cron via le module cron
       const cronName = "docker-logs-backup";
@@ -456,14 +456,17 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       return {
         success: true,
         enabled: false,
-        message: "Backup des logs désactivé avec succès",
+        message: "Backup des logs des containers Docker désactivé avec succès",
       };
     }
   } catch (error) {
-    logger.error("Erreur lors de la gestion du backup des logs", {
-      error: error.message,
-      stack: error.stack,
-    });
+    logger.error(
+      "Erreur lors de la gestion du backup des logs des containers Docker",
+      {
+        error: error.message,
+        stack: error.stack,
+      },
+    );
     throw error;
   }
 }
