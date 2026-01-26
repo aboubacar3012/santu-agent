@@ -6,7 +6,6 @@
  * @module modules/backup/actions/utils
  */
 
-import { logger } from "../../../shared/logger.js";
 import { executeCommand } from "../../../shared/executor.js";
 
 /**
