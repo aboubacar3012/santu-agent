@@ -29,18 +29,18 @@ function escapeShellContent(content) {
 }
 
 /**
- * Lit le script Python depuis le fichier local
- * @returns {string} Contenu du script Python
+ * Lit le script JavaScript depuis le fichier local
+ * @returns {string} Contenu du script JavaScript
  */
-function getPythonScript() {
+function getJavaScriptScript() {
   try {
-    const scriptPath = join(__dirname, "docker_log_collector_service.py");
+    const scriptPath = join(__dirname, "docker_log_collector_service.js");
     return readFileSync(scriptPath, "utf-8");
   } catch (error) {
-    logger.error("Impossible de lire le script Python", {
+    logger.error("Impossible de lire le script JavaScript", {
       error: error.message,
     });
-    throw new Error("Script Python introuvable");
+    throw new Error("Script JavaScript introuvable");
   }
 }
 
@@ -101,68 +101,23 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         );
       }
 
-      // 2. Installer python3-venv si nécessaire
-      logger.info("Étape 2: Installation des dépendances Python");
-      const installVenvResult = await executeHostCommand(
-        "apt-get update && apt-get install -y python3-venv",
-        { timeout: 300000 }
-      );
+      // 2. Vérifier que Node.js est installé
+      logger.info("Étape 2: Vérification de Node.js");
+      const nodeCheckResult = await executeHostCommand("which node", {
+        timeout: 5000,
+      });
 
-      if (installVenvResult.error) {
-        logger.warn("Erreur lors de l'installation de python3-venv", {
-          stderr: installVenvResult.stderr,
-        });
-      }
-
-      // 3. Créer l'environnement virtuel
-      logger.info("Étape 3: Création de l'environnement virtuel");
-      const venvDir = "/opt/docker-log-collector/venv";
-      const venvExists = await hostDirExists(venvDir);
-
-      if (!venvExists) {
-        const createVenvResult = await executeHostCommand(
-          `python3 -m venv '${venvDir}'`,
-          { timeout: 60000 }
-        );
-
-        if (createVenvResult.error) {
-          throw new Error(
-            `Erreur lors de la création du venv: ${createVenvResult.stderr}`
-          );
-        }
-      }
-
-      // 4. Mettre à jour pip
-      logger.info("Étape 4: Mise à jour de pip");
-      const updatePipResult = await executeHostCommand(
-        `${venvDir}/bin/pip install --upgrade pip`,
-        { timeout: 60000 }
-      );
-
-      if (updatePipResult.error) {
-        logger.warn("Erreur lors de la mise à jour de pip", {
-          stderr: updatePipResult.stderr,
-        });
-      }
-
-      // 5. Installer les dépendances Python
-      logger.info("Étape 5: Installation des dépendances Python");
-      const installDepsResult = await executeHostCommand(
-        `${venvDir}/bin/pip install 'boto3>=1.26.0' 'botocore>=1.29.0' 'pytz>=2023.3'`,
-        { timeout: 300000 }
-      );
-
-      if (installDepsResult.error) {
+      if (nodeCheckResult.error || !nodeCheckResult.stdout.trim()) {
         throw new Error(
-          `Erreur lors de l'installation des dépendances: ${installDepsResult.stderr}`
+          "Node.js n'est pas installé. Veuillez installer Node.js d'abord."
         );
       }
 
-      // 6. Déployer le script Python
-      logger.info("Étape 6: Déploiement du script Python");
-      const scriptPath = "/usr/local/bin/docker_log_collector_service.py";
-      const pythonScript = getPythonScript();
-      const escapedScript = escapeShellContent(pythonScript);
+      // 3. Déployer le script JavaScript
+      logger.info("Étape 3: Déploiement du script JavaScript");
+      const scriptPath = "/usr/local/bin/docker_log_collector_service.js";
+      const jsScript = getJavaScriptScript();
+      const escapedScript = escapeShellContent(jsScript);
 
       const deployScriptResult = await executeHostCommand(
         `printf '%s' '${escapedScript}' > '${scriptPath}' && chmod 755 '${scriptPath}' && chown root:root '${scriptPath}'`
@@ -174,11 +129,42 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         );
       }
 
-      // 7. Créer la tâche cron (toutes les 2 minutes)
-      logger.info("Étape 7: Création de la tâche cron");
+      // 4. Installer les dépendances npm si nécessaire (pour @aws-sdk/client-s3)
+      logger.info("Étape 4: Installation des dépendances npm");
+      const npmDir = "/opt/docker-log-collector";
+      await executeHostCommand(`mkdir -p '${npmDir}'`, { timeout: 5000 });
+      
+      // Créer un package.json minimal pour installer @aws-sdk/client-s3
+      const packageJson = JSON.stringify({
+        name: "docker-log-collector",
+        version: "1.0.0",
+        type: "module",
+        dependencies: {
+          "@aws-sdk/client-s3": "^3.700.0",
+        },
+      });
+      const escapedPackageJson = escapeShellContent(packageJson);
+      await executeHostCommand(
+        `printf '%s' '${escapedPackageJson}' > '${npmDir}/package.json'`
+      );
+
+      // Installer les dépendances
+      const installNpmResult = await executeHostCommand(
+        `cd '${npmDir}' && npm install --production --no-save`,
+        { timeout: 300000 }
+      );
+
+      if (installNpmResult.error) {
+        logger.warn("Erreur lors de l'installation des dépendances npm", {
+          stderr: installNpmResult.stderr,
+        });
+      }
+
+      // 5. Créer la tâche cron (toutes les 2 minutes)
+      logger.info("Étape 5: Création de la tâche cron");
       const cronName = "docker-logs-backup";
       const cronFile = `/etc/cron.d/agent-cron-${cronName}`;
-      const cronCommand = `source ${awsEnvFile} && ${venvDir}/bin/python ${scriptPath} --env ${env} >> /var/log/docker-log-collector.log 2>&1`;
+      const cronCommand = `source ${awsEnvFile} && export NODE_PATH='${npmDir}/node_modules' && node ${scriptPath} --env ${env} >> /var/log/docker-log-collector.log 2>&1`;
       const cronLine = `*/2 * * * * root ${cronCommand}\n`;
 
       const escapedCron = escapeShellContent(cronLine);
@@ -192,16 +178,16 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         );
       }
 
-      // 8. Créer le répertoire de logs
-      logger.info("Étape 8: Création du répertoire de logs");
+      // 6. Créer le répertoire de logs
+      logger.info("Étape 6: Création du répertoire de logs");
       await executeHostCommand(
         "mkdir -p /tmp/docker-logs && chmod 755 /tmp/docker-logs"
       );
 
-      // 9. Test immédiat
-      logger.info("Étape 9: Test immédiat du script");
+      // 7. Test immédiat
+      logger.info("Étape 7: Test immédiat du script");
       const testResult = await executeHostCommand(
-        `source ${awsEnvFile} && ${venvDir}/bin/python ${scriptPath} --env ${env}`,
+        `source ${awsEnvFile} && export NODE_PATH='${npmDir}/node_modules' && node ${scriptPath} --env ${env}`,
         { timeout: 120000 }
       );
 
@@ -247,10 +233,10 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
 
       // 2. Arrêter les processus en cours (optionnel)
       await executeHostCommand(
-        "pkill -f docker_log_collector_service.py || true"
+        "pkill -f docker_log_collector_service.js || true"
       );
 
-      // Note: On garde le fichier AWS, le script Python et le venv pour permettre une réactivation rapide
+      // Note: On garde le fichier AWS et le script JavaScript pour permettre une réactivation rapide
 
       return {
         success: true,
