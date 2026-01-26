@@ -11,6 +11,8 @@ import { requireRole } from "../../../websocket/auth.js";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { addCronJob } from "../../cron/actions/add-cron.js";
+import { deleteCronJob } from "../../cron/actions/delete-cron.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -339,43 +341,36 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         );
       }
 
-      // 5. Créer la tâche cron (toutes les 2 minutes)
+      // 5. Créer la tâche cron (toutes les 2 minutes) via le module cron
       logger.info("Étape 5: Création de la tâche cron");
       const cronName = "docker-logs-backup";
-      const cronFile = `/etc/cron.d/agent-cron-${cronName}`;
-
-      // Supprimer l'ancien fichier cron s'il existe pour éviter les problèmes de format
-      const cronExists = await hostFileExists(cronFile);
-      if (cronExists) {
-        logger.info("Suppression de l'ancien fichier cron avant recréation");
-        const deleteCronResult = await executeHostCommand(
-          `rm -f '${cronFile}'`,
-        );
-        if (deleteCronResult.error) {
-          logger.warn(
-            "Erreur lors de la suppression de l'ancien fichier cron",
-            {
-              stderr: deleteCronResult.stderr,
-            },
-          );
-        }
-      }
 
       // Le script Python lit directement le fichier AWS via source
       // Utiliser bash -c pour que source fonctionne (cron utilise /bin/sh par défaut)
       const cronCommand = `bash -c "source ${awsEnvFile} && python3 ${scriptPath} --env ${env}" >> /var/log/docker-log-collector.log 2>&1`;
-      const cronLine = `*/2 * * * * root ${cronCommand}\n`;
 
-      const escapedCron = escapeShellContent(cronLine);
-      // Utiliser echo au lieu de printf pour garantir la nouvelle ligne à la fin
-      // Les fichiers /etc/cron.d/ DOIVENT se terminer par une nouvelle ligne
-      const createCronResult = await executeHostCommand(
-        `echo '${escapedCron}' > '${cronFile}' && chmod 644 '${cronFile}' && chown root:root '${cronFile}'`,
+      // Utiliser le module cron pour créer la tâche
+      const cronResult = await addCronJob(
+        {
+          task_name: cronName,
+          command: cronCommand,
+          schedule: {
+            minute: "*/2",
+            hour: "*",
+            day: "*",
+            month: "*",
+            weekday: "*",
+          },
+          user: "root",
+          description: "Backup des logs Docker vers S3",
+          enabled: true,
+        },
+        callbacks,
       );
 
-      if (createCronResult.error) {
+      if (!cronResult.success) {
         throw new Error(
-          `Erreur lors de la création de la tâche cron: ${createCronResult.stderr}`,
+          `Erreur lors de la création de la tâche cron: ${cronResult.message || "Erreur inconnue"}`,
         );
       }
 
@@ -417,21 +412,32 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
 
       logger.info("Désactivation du backup des logs");
 
-      // 1. Supprimer la tâche cron
+      // 1. Supprimer la tâche cron via le module cron
       const cronName = "docker-logs-backup";
-      const cronFile = `/etc/cron.d/agent-cron-${cronName}`;
-      const cronExists = await hostFileExists(cronFile);
 
-      if (cronExists) {
-        const deleteCronResult = await executeHostCommand(
-          `rm -f '${cronFile}'`,
+      try {
+        const deleteCronResult = await deleteCronJob(
+          {
+            task_name: cronName,
+          },
+          callbacks,
         );
-        if (deleteCronResult.error) {
-          logger.warn("Erreur lors de la suppression de la tâche cron", {
-            stderr: deleteCronResult.stderr,
-          });
-        } else {
+
+        if (deleteCronResult.success) {
           logger.info("Tâche cron supprimée");
+        } else {
+          logger.warn("Erreur lors de la suppression de la tâche cron", {
+            message: deleteCronResult.message,
+          });
+        }
+      } catch (error) {
+        // Si la tâche n'existe pas, ce n'est pas grave
+        if (error.message && error.message.includes("n'existe pas")) {
+          logger.info("La tâche cron n'existe pas, rien à supprimer");
+        } else {
+          logger.warn("Erreur lors de la suppression de la tâche cron", {
+            error: error.message,
+          });
         }
       }
 
