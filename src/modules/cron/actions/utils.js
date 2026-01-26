@@ -382,3 +382,171 @@ export async function hostFileExists(filePath) {
   }
 }
 
+/**
+ * Vérifie et installe cron si nécessaire
+ * S'assure que le service cron est installé et en cours d'exécution
+ * @returns {Promise<void>}
+ */
+export async function ensureCronInstalled() {
+  try {
+    // 1. Vérifier si cron est installé
+    logger.debug("Vérification de l'installation de cron");
+    const cronCheck = await executeHostCommand(
+      "which cron 2>/dev/null || which crond 2>/dev/null || echo 'not_found'",
+      { timeout: 5000 }
+    );
+
+    const cronInstalled = cronCheck.stdout.trim() !== "not_found";
+
+    // 2. Vérifier si le service cron est en cours d'exécution
+    let cronRunning = false;
+    if (cronInstalled) {
+      // Essayer systemctl d'abord (systemd)
+      const systemctlCheck = await executeHostCommand(
+        "systemctl is-active cron 2>/dev/null || systemctl is-active crond 2>/dev/null || echo 'inactive'",
+        { timeout: 5000 }
+      );
+
+      if (systemctlCheck.stdout.trim() === "active") {
+        cronRunning = true;
+        logger.debug("Service cron est actif (systemd)");
+      } else {
+        // Essayer service (init.d)
+        const serviceCheck = await executeHostCommand(
+          "service cron status 2>/dev/null || service crond status 2>/dev/null || echo 'inactive'",
+          { timeout: 5000 }
+        );
+
+        if (
+          serviceCheck.stdout.includes("running") ||
+          serviceCheck.stdout.includes("active")
+        ) {
+          cronRunning = true;
+          logger.debug("Service cron est actif (init.d)");
+        } else {
+          // Vérifier si le processus cron tourne
+          const processCheck = await executeHostCommand(
+            "pgrep -x cron >/dev/null 2>&1 || pgrep -x crond >/dev/null 2>&1 || echo 'not_running'",
+            { timeout: 5000 }
+          );
+
+          if (processCheck.stdout.trim() !== "not_running") {
+            cronRunning = true;
+            logger.debug("Processus cron est en cours d'exécution");
+          }
+        }
+      }
+    }
+
+    // 3. Si cron n'est pas installé, l'installer
+    if (!cronInstalled) {
+      logger.info("Installation de cron...");
+
+      // Détecter la distribution
+      const distroCheck = await executeHostCommand(
+        "cat /etc/os-release 2>/dev/null | grep -i '^ID=' | cut -d'=' -f2 | tr -d '\"' || echo 'unknown'",
+        { timeout: 5000 }
+      );
+      const distro = distroCheck.stdout.trim().toLowerCase();
+
+      let installCommand = null;
+
+      if (distro === "debian" || distro === "ubuntu") {
+        installCommand =
+          "apt-get update -y >/dev/null 2>&1 && apt-get install -y cron >/dev/null 2>&1";
+      } else if (distro === "centos" || distro === "rhel" || distro === "fedora") {
+        // Essayer dnf d'abord, puis yum
+        const dnfCheck = await executeHostCommand("which dnf 2>/dev/null", {
+          timeout: 5000,
+        });
+        if (!dnfCheck.error && dnfCheck.stdout.trim()) {
+          installCommand = "dnf install -y cronie >/dev/null 2>&1";
+        } else {
+          installCommand = "yum install -y cronie >/dev/null 2>&1";
+        }
+      } else if (distro === "arch" || distro === "manjaro") {
+        installCommand = "pacman -Sy --noconfirm cronie >/dev/null 2>&1";
+      } else if (distro === "alpine") {
+        installCommand = "apk add --no-cache dcron >/dev/null 2>&1";
+      } else {
+        // Distribution inconnue, essayer apt-get par défaut
+        logger.warn(
+          `Distribution inconnue (${distro}), tentative d'installation avec apt-get`
+        );
+        installCommand =
+          "apt-get update -y >/dev/null 2>&1 && apt-get install -y cron >/dev/null 2>&1";
+      }
+
+      if (installCommand) {
+        logger.info(`Installation de cron avec: ${installCommand.split(" >")[0]}`);
+        const installResult = await executeHostCommand(installCommand, {
+          timeout: 120000, // 2 minutes
+        });
+
+        if (installResult.error) {
+          logger.warn("Erreur lors de l'installation de cron", {
+            stderr: installResult.stderr,
+            stdout: installResult.stdout,
+          });
+          throw new Error(
+            `Échec de l'installation de cron: ${installResult.stderr || installResult.stdout || "Erreur inconnue"}`
+          );
+        } else {
+          logger.info("Cron installé avec succès");
+        }
+      } else {
+        throw new Error(
+          `Impossible de déterminer la commande d'installation pour la distribution: ${distro}`
+        );
+      }
+    }
+
+    // 4. Démarrer le service cron s'il n'est pas en cours d'exécution
+    if (!cronRunning) {
+      logger.info("Démarrage du service cron...");
+
+      // Essayer systemctl d'abord
+      const systemctlStart = await executeHostCommand(
+        "systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null || echo 'systemctl_failed'",
+        { timeout: 30000 }
+      );
+
+      if (systemctlStart.stdout.trim() === "systemctl_failed") {
+        // Essayer service (init.d)
+        await executeHostCommand(
+          "service cron start 2>/dev/null || service crond start 2>/dev/null || true",
+          { timeout: 30000 }
+        );
+      }
+
+      // Vérifier à nouveau si cron est maintenant en cours d'exécution
+      const verifyCheck = await executeHostCommand(
+        "systemctl is-active cron 2>/dev/null || systemctl is-active crond 2>/dev/null || pgrep -x cron >/dev/null 2>&1 || pgrep -x crond >/dev/null 2>&1 || echo 'inactive'",
+        { timeout: 5000 }
+      );
+
+      if (verifyCheck.stdout.trim() === "inactive") {
+        logger.warn(
+          "Le service cron n'a pas pu être démarré automatiquement. Veuillez le démarrer manuellement."
+        );
+      } else {
+        logger.info("Service cron démarré avec succès");
+      }
+
+      // Activer cron au démarrage
+      await executeHostCommand(
+        "systemctl enable cron 2>/dev/null || systemctl enable crond 2>/dev/null || true",
+        { timeout: 10000 }
+      );
+    } else {
+      logger.debug("Cron est déjà installé et en cours d'exécution");
+    }
+  } catch (error) {
+    logger.error("Erreur lors de la vérification/installation de cron", {
+      error: error.message,
+      stack: error.stack,
+    });
+    throw error;
+  }
+}
+

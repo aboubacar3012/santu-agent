@@ -6,7 +6,7 @@
 
 import { logger } from "../../../shared/logger.js";
 import { validateCronParams } from "../validator.js";
-import { executeHostCommand, hostFileExists } from "./utils.js";
+import { executeHostCommand, hostFileExists, ensureCronInstalled } from "./utils.js";
 import { requireRole } from "../../../websocket/auth.js";
 
 /**
@@ -63,6 +63,9 @@ export async function addCronJob(params = {}, callbacks = {}) {
       user,
       enabled,
     });
+
+    // S'assurer que cron est installé et en cours d'exécution
+    await ensureCronInstalled();
 
     const cronDir = "/etc/cron.d";
     const fileName = generateFileName(task_name);
