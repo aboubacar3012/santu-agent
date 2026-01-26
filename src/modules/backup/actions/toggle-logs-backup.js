@@ -374,6 +374,8 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         );
       }
 
+      const cronFile = cronResult.file_path;
+
       // 6. Créer le répertoire de logs
       logger.info("Étape 6: Création du répertoire de logs");
       await executeHostCommand(
