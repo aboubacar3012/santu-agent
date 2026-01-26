@@ -117,10 +117,15 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       logger.info("Étape 3: Déploiement du script JavaScript");
       const scriptPath = "/usr/local/bin/docker_log_collector_service.js";
       const jsScript = getJavaScriptScript();
-      const escapedScript = escapeShellContent(jsScript);
+      
+      // Encoder le script en base64 pour éviter les problèmes d'échappement
+      // base64 est disponible sur tous les systèmes Linux modernes
+      const scriptBase64 = Buffer.from(jsScript, "utf-8").toString("base64");
+      const escapedBase64 = escapeShellContent(scriptBase64);
 
+      // Utiliser base64 -d (GNU) ou base64 --decode (BSD), avec fallback
       const deployScriptResult = await executeHostCommand(
-        `printf '%s' '${escapedScript}' > '${scriptPath}' && chmod 755 '${scriptPath}' && chown root:root '${scriptPath}'`
+        `echo '${escapedBase64}' | (base64 -d 2>/dev/null || base64 --decode 2>/dev/null) > '${scriptPath}' && chmod 755 '${scriptPath}' && chown root:root '${scriptPath}'`
       );
 
       if (deployScriptResult.error) {
