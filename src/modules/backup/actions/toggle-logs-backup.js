@@ -29,18 +29,18 @@ function escapeShellContent(content) {
 }
 
 /**
- * Lit le script JavaScript depuis le fichier local
- * @returns {string} Contenu du script JavaScript
+ * Lit le script Python depuis le fichier local
+ * @returns {string} Contenu du script Python
  */
-function getJavaScriptScript() {
+function getPythonScript() {
   try {
-    const scriptPath = join(__dirname, "docker_log_collector_service.js");
+    const scriptPath = join(__dirname, "docker_log_collector_service.py");
     return readFileSync(scriptPath, "utf-8");
   } catch (error) {
-    logger.error("Impossible de lire le script JavaScript", {
+    logger.error("Impossible de lire le script Python", {
       error: error.message,
     });
-    throw new Error("Script JavaScript introuvable");
+    throw new Error("Script Python introuvable");
   }
 }
 
@@ -101,26 +101,61 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         );
       }
 
-      // 2. Vérifier que Node.js est installé
-      logger.info("Étape 2: Vérification de Node.js");
-      const nodeCheckResult = await executeHostCommand("which node", {
+      // 2. Vérifier que Python3 est installé
+      logger.info("Étape 2: Vérification de Python3");
+      const pythonCheckResult = await executeHostCommand("which python3", {
         timeout: 5000,
       });
 
-      if (nodeCheckResult.error || !nodeCheckResult.stdout.trim()) {
+      if (pythonCheckResult.error || !pythonCheckResult.stdout.trim()) {
         throw new Error(
-          "Node.js n'est pas installé. Veuillez installer Node.js d'abord."
+          "Python3 n'est pas installé. Veuillez installer Python3 d'abord."
         );
       }
 
-      // 3. Déployer le script JavaScript
-      logger.info("Étape 3: Déploiement du script JavaScript");
-      const scriptPath = "/usr/local/bin/docker_log_collector_service.js";
-      const jsScript = getJavaScriptScript();
+      // 3. Vérifier que boto3 et pytz sont installés
+      logger.info("Étape 3: Vérification des dépendances Python");
+      const boto3Check = await executeHostCommand(
+        "python3 -c 'import boto3' 2>&1",
+        { timeout: 5000 }
+      );
+      const pytzCheck = await executeHostCommand(
+        "python3 -c 'import pytz' 2>&1",
+        { timeout: 5000 }
+      );
+
+      if (boto3Check.error || pytzCheck.error) {
+        logger.info("Installation des dépendances Python (boto3, pytz)...");
+        const installPipResult = await executeHostCommand(
+          "pip3 install --quiet boto3 pytz 2>&1",
+          { timeout: 120000 }
+        );
+
+        if (installPipResult.error) {
+          logger.warn("Erreur lors de l'installation des dépendances Python", {
+            stderr: installPipResult.stderr,
+            stdout: installPipResult.stdout,
+          });
+          // Vérifier à nouveau après tentative d'installation
+          const boto3Check2 = await executeHostCommand(
+            "python3 -c 'import boto3' 2>&1",
+            { timeout: 5000 }
+          );
+          if (boto3Check2.error) {
+            throw new Error(
+              `Échec de l'installation des dépendances Python. boto3 est requis: ${installPipResult.stderr || installPipResult.stdout}`
+            );
+          }
+        }
+      }
+
+      // 4. Déployer le script Python
+      logger.info("Étape 4: Déploiement du script Python");
+      const scriptPath = "/usr/local/bin/docker_log_collector_service.py";
+      const pythonScript = getPythonScript();
       
       // Encoder le script en base64 pour éviter les problèmes d'échappement
-      // base64 est disponible sur tous les systèmes Linux modernes
-      const scriptBase64 = Buffer.from(jsScript, "utf-8").toString("base64");
+      const scriptBase64 = Buffer.from(pythonScript, "utf-8").toString("base64");
       const escapedBase64 = escapeShellContent(scriptBase64);
 
       // Utiliser base64 -d (GNU) ou base64 --decode (BSD), avec fallback
@@ -134,107 +169,12 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         );
       }
 
-      // 4. Installer les dépendances npm (toujours dans /opt/docker-log-collector pour NODE_PATH)
-      logger.info("Étape 4: Installation des dépendances npm");
-      const npmDir = "/opt/docker-log-collector";
-      await executeHostCommand(`mkdir -p '${npmDir}'`, { timeout: 5000 });
-      
-      // Vérifier si le module est déjà installé au bon endroit
-      const checkLocalModule = await executeHostCommand(
-        `test -d '${npmDir}/node_modules/@aws-sdk/client-s3' && echo 'exists' || echo 'not_exists'`
-      );
-
-      if (checkLocalModule.stdout.trim() !== "exists") {
-        // Le module n'existe pas au bon endroit, l'installer
-        logger.info(`Installation de @aws-sdk/client-s3 dans ${npmDir}...`);
-        
-        // Créer un package.json minimal pour installer @aws-sdk/client-s3
-        const packageJson = JSON.stringify({
-          name: "docker-log-collector",
-          version: "1.0.0",
-          type: "module",
-          dependencies: {
-            "@aws-sdk/client-s3": "^3.975.0",
-          },
-        });
-        const escapedPackageJson = escapeShellContent(packageJson);
-        const createPackageJsonResult = await executeHostCommand(
-          `printf '%s' '${escapedPackageJson}' > '${npmDir}/package.json'`
-        );
-
-        if (createPackageJsonResult.error) {
-          throw new Error(
-            `Erreur lors de la création du package.json: ${createPackageJsonResult.stderr}`
-          );
-        }
-
-        // Vérifier que npm est disponible
-        const npmCheckResult = await executeHostCommand("which npm", {
-          timeout: 5000,
-        });
-
-        if (npmCheckResult.error || !npmCheckResult.stdout.trim()) {
-          throw new Error(
-            "npm n'est pas installé. Veuillez installer Node.js et npm d'abord."
-          );
-        }
-
-        // Installer les dépendances (via nsenter, donc sur l'hôte)
-        logger.info("Exécution de npm install...");
-        const installNpmResult = await executeHostCommand(
-          `cd '${npmDir}' && npm install --production --no-save --loglevel=error 2>&1`,
-          { timeout: 300000 }
-        );
-
-        if (installNpmResult.error) {
-          logger.error("Erreur lors de l'installation des dépendances npm", {
-            stderr: installNpmResult.stderr,
-            stdout: installNpmResult.stdout,
-          });
-          throw new Error(
-            `Échec de l'installation des dépendances npm: ${installNpmResult.stderr || installNpmResult.stdout}`
-          );
-        }
-
-        // Vérifier que le module est bien installé
-        const moduleCheckResult = await executeHostCommand(
-          `test -d '${npmDir}/node_modules/@aws-sdk/client-s3' && echo 'exists' || echo 'not_exists'`
-        );
-
-        if (moduleCheckResult.stdout.trim() !== "exists") {
-          logger.error("Le module n'a pas été installé", {
-            npmDir,
-            stdout: installNpmResult.stdout,
-            stderr: installNpmResult.stderr,
-          });
-          throw new Error(
-            `Le module @aws-sdk/client-s3 n'a pas été installé correctement dans ${npmDir}/node_modules`
-          );
-        }
-
-        logger.info("Dépendances npm installées avec succès");
-      } else {
-        logger.info(`Le module @aws-sdk/client-s3 est déjà installé dans ${npmDir}/node_modules`);
-      }
-      
-      // Vérification finale que le module est bien présent
-      const finalCheck = await executeHostCommand(
-        `test -d '${npmDir}/node_modules/@aws-sdk/client-s3' && echo 'exists' || echo 'not_exists'`
-      );
-      
-      if (finalCheck.stdout.trim() !== "exists") {
-        throw new Error(
-          `Le module @aws-sdk/client-s3 n'est pas présent dans ${npmDir}/node_modules après installation/vérification`
-        );
-      }
-
       // 5. Créer la tâche cron (toutes les 2 minutes)
       logger.info("Étape 5: Création de la tâche cron");
       const cronName = "docker-logs-backup";
       const cronFile = `/etc/cron.d/agent-cron-${cronName}`;
-      // Le script Node.js lit directement le fichier AWS, pas besoin de source
-      // Utiliser bash explicitement pour garantir que export fonctionne
-      const cronCommand = `bash -c "export NODE_PATH='${npmDir}/node_modules' && node ${scriptPath} --env ${env}" >> /var/log/docker-log-collector.log 2>&1`;
+      // Le script Python lit directement le fichier AWS via source
+      const cronCommand = `source ${awsEnvFile} && python3 ${scriptPath} --env ${env} >> /var/log/docker-log-collector.log 2>&1`;
       const cronLine = `*/2 * * * * root ${cronCommand}\n`;
 
       const escapedCron = escapeShellContent(cronLine);
@@ -256,21 +196,9 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
 
       // 7. Test immédiat
       logger.info("Étape 7: Test immédiat du script");
-      // Le script Node.js lit directement le fichier AWS, pas besoin de source
-      // Utiliser bash pour garantir que export fonctionne correctement
-      // Vérifier d'abord que le module est bien présent
-      const verifyModule = await executeHostCommand(
-        `test -d '${npmDir}/node_modules/@aws-sdk/client-s3' && echo 'exists' || echo 'not_exists'`
-      );
-      
-      if (verifyModule.stdout.trim() !== "exists") {
-        throw new Error(
-          `Le module @aws-sdk/client-s3 n'est pas présent dans ${npmDir}/node_modules avant le test`
-        );
-      }
-      
+      // Le script Python lit directement le fichier AWS via source
       const testResult = await executeHostCommand(
-        `bash -c "export NODE_PATH='${npmDir}/node_modules' && node ${scriptPath} --env ${env}"`,
+        `bash -c "source ${awsEnvFile} && python3 ${scriptPath} --env ${env}"`,
         { timeout: 120000 }
       );
 
@@ -316,7 +244,7 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
 
       // 2. Arrêter les processus en cours (optionnel)
       await executeHostCommand(
-        "pkill -f docker_log_collector_service.js || true"
+        "pkill -f docker_log_collector_service.py || true"
       );
 
       // Note: On garde le fichier AWS et le script JavaScript pour permettre une réactivation rapide
