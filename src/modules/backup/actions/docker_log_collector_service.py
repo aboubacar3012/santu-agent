@@ -1,460 +1,477 @@
 #!/usr/bin/env python3
 """
 ###############################################################################
-SERVICE: Collecte et upload des logs Docker vers AWS S3
-
-DESCRIPTION:
-Ce script collecte automatiquement les logs de tous les containers Docker
-et les upload vers un bucket S3 AWS pour archivage et sauvegarde.
-
-FONCTIONNEMENT:
-1. COLLECTE DES LOGS (toutes les 2 minutes):
-   - Copie les fichiers de logs JSON Docker (*-json.log) vers des fichiers temporaires
-   - Manipule seulement les fichiers temporaires pour éviter de toucher aux originaux
-   - Parse les logs JSON pour séparer stdout et stderr
-   - Collecte uniquement les logs des 2 dernières minutes
-   - Accumule les logs dans des fichiers temporaires par heure:
-     * container/date/10h00min_all.log (tous les logs de 10h00 à 10h59)
-     * container/date/10h00min_errors.log (seulement les stderr de 10h00 à 10h59)
-   - Utilise l'heure de Paris (UTC+1/UTC+2)
-
-2. UPLOAD VERS S3 (toutes les heures):
-   - Upload seulement au début de chaque heure (dans les 2 premières minutes)
-   - Upload les fichiers temporaires de l'heure précédente
-   - Compresse les logs en .log.gz
-   - Upload vers S3 avec structure: env/container/date/heure.log.gz
-   - Supprime les fichiers locaux après upload réussi
-
-3. NETTOYAGE:
-   - Supprime les fichiers temporaires créés lors de la collecte
-   - Nettoie les fichiers temporaires de l'heure précédente après upload
-
-STRUCTURE S3 FINALE:
-s3://elyamaje-log-files/prod/
-├── elyamajeplay-backend/
-│   └── 2025-01-27/
-│       ├── 11h00min_all.log.gz
-│       ├── 11h00min_errors.log.gz
-│       ├── 12h00min_all.log.gz
-│       └── 12h00min_errors.log.gz
-└── elyamajeplay-dashboard/
-    └── 2025-01-27/
-        ├── 12h00min_all.log.gz
-        └── 12h00min_errors.log.gz
-
-VARIABLES:
-- env: prod (environnement: dev, sandbox, prod)
-- log_base_dir: /tmp/docker-logs (répertoire de collecte)
-- aws_env_file: /etc/._4d8f2.sh (fichier d'environnement AWS)
-
-USAGE:
-- Exécution manuelle: python3 docker_log_collector_service.py --env prod
-- Via cron: toutes les 2 minutes (format cron: toutes les 2 minutes)
-- Logs: /var/log/docker-log-collector.log
-
-DÉPENDANCES:
-- boto3
-- pytz
-
-SORTIE:
-- Logs collectés et uploadés vers S3
-- Fichiers temporaires nettoyés
-- Logs détaillés dans /var/log/docker-log-collector.log
+# SERVICE: Collecte et upload des logs Docker vers AWS S3
+# 
+# DESCRIPTION:
+# Ce script collecte automatiquement les logs de tous les containers Docker
+# et les upload vers un bucket S3 AWS pour archivage et sauvegarde.
+#
+# FONCTIONNEMENT:
+# 1. COLLECTE DES LOGS:
+#    - Copie les fichiers de logs JSON Docker (*-json.log) vers des fichiers temporaires
+#    - Manipule seulement les fichiers temporaires pour éviter de toucher aux originaux
+#    - Parse les logs JSON pour séparer stdout et stderr
+#    - Crée deux fichiers par container:
+#      * container/date/heure_all.log (tous les logs)
+#      * container/date/heure_errors.log (seulement les stderr)
+#    - Utilise l'heure de Paris (UTC+1/UTC+2)
+#
+# 2. UPLOAD VERS S3:
+#    - Compresse les logs en .log.gz
+#    - Upload vers S3 avec structure: env/container/date/heure.log.gz
+#    - Supprime les fichiers locaux après upload réussi
+#
+# 3. NETTOYAGE:
+#    - Supprime les fichiers temporaires créés lors de la collecte
+#    - Vide le répertoire temporaire /tmp/docker-logs/
+#
+# STRUCTURE S3 FINALE:
+# s3://elyamaje-log-files/prod/
+# ├── elyamajeplay-backend/
+# │   └── 2025-01-27/
+# │       ├── 11h00min_all.log.gz
+# │       ├── 11h00min_errors.log.gz
+# │       ├── 12h00min_all.log.gz
+# │       └── 12h00min_errors.log.gz
+# └── elyamajeplay-dashboard/
+#     └── 2025-01-27/
+#         ├── 12h00min_all.log.gz
+#         └── 12h00min_errors.log.gz
+#
+# VARIABLES:
+# - env: prod (environnement: dev, sandbox, prod)
+# - log_base_dir: /tmp/docker-logs (répertoire de collecte)
+# - aws_env_file: /etc/._4d8f2.sh (fichier d'environnement AWS)
+#
+# USAGE:
+# - Exécution manuelle: python3 docker_log_collector_service.py --env prod
+# - Via cron: */2 * * * * (toutes les 2 minutes) ou 0 * * * * (toutes les heures)
+# - Logs: /var/log/docker-log-collector.log
+#
+# DÉPENDANCES:
+# - boto3>=1.26.0
+# - botocore>=1.29.0
+# - pytz>=2023.3
+#
+# SORTIE:
+# - Logs collectés et uploadés vers S3
+# - Fichiers temporaires nettoyés
+# - Logs détaillés dans /var/log/docker-log-collector.log
 ###############################################################################
 """
 
 import os
 import sys
 import json
+import time
 import gzip
 import shutil
-import argparse
+import logging
 import subprocess
-from datetime import datetime, timedelta
-from pathlib import Path
 import boto3
-from botocore.exceptions import ClientError
 import pytz
+from datetime import datetime
+from pathlib import Path
+from botocore.exceptions import ClientError, NoCredentialsError
 
-# Logger simple pour le script standalone
-LOG_FILE = "/var/log/docker-log-collector.log"
+# Configuration du logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("/var/log/docker-log-collector.log"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger(__name__)
 
-def log(level, message, *args):
-    """Log un message avec timestamp"""
-    timestamp = datetime.utcnow().isoformat() + "Z"
-    args_str = " ".join(str(a) if not isinstance(a, dict) else json.dumps(a) for a in args)
-    log_message = f"[{timestamp}] [{level}] {message} {args_str}\n"
-    
-    # Écrire dans le fichier de log
-    try:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(log_message)
-    except Exception:
-        # Si on ne peut pas écrire dans le fichier, afficher sur stderr
-        print(log_message, file=sys.stderr)
-    
-    # Aussi afficher sur stdout/stderr pour le cron
-    if level in ("ERROR", "WARN"):
-        print(log_message.strip(), file=sys.stderr)
-    else:
-        print(log_message.strip())
 
 class DockerLogCollectorService:
     def __init__(self, env="sandbox"):
         self.env = env
-        self.log_base_dir = "/tmp/docker-logs"
-        self.docker_log_dir = "/var/lib/docker/containers"
+        self.log_base_dir = Path("/tmp/docker-logs")
+        self.docker_log_dir = Path("/var/lib/docker/containers")
         self.aws_env_file = "/etc/._4d8f2.sh"
-        
+
         # Charger les variables AWS
         self.load_aws_credentials()
-        
+
         # Initialiser le client S3
         self.s3_client = boto3.client(
-            's3',
-            region_name=self.aws_region,
+            "s3",
             aws_access_key_id=self.aws_access_key_id,
-            aws_secret_access_key=self.aws_secret_access_key
+            aws_secret_access_key=self.aws_secret_access_key,
+            region_name=self.aws_region,
         )
-    
+
     def get_paris_time(self):
-        """Retourne un objet datetime à Paris"""
-        paris_tz = pytz.timezone('Europe/Paris')
-        return datetime.now(paris_tz)
-    
+        """Retourne l'heure actuelle à Paris (UTC+1 ou UTC+2 selon l'heure d'été)"""
+        # Utiliser pytz pour une gestion précise de l'heure de Paris
+        paris_tz = pytz.timezone("Europe/Paris")
+        paris_time = datetime.now(paris_tz)
+        return paris_time
+
     def load_aws_credentials(self):
         """Charge les credentials AWS depuis le fichier d'environnement"""
         try:
-            if not os.path.exists(self.aws_env_file):
-                log("ERROR", f"Fichier d'environnement AWS non trouvé: {self.aws_env_file}")
+            if os.path.exists(self.aws_env_file):
+                with open(self.aws_env_file, "r") as f:
+                    for line in f:
+                        if line.startswith("export "):
+                            key, value = (
+                                line.replace("export ", "").strip().split("=", 1)
+                            )
+                            value = value.strip('"')
+                            if key == "AWS_ACCESS_KEY_ID":
+                                self.aws_access_key_id = value
+                            elif key == "AWS_SECRET_ACCESS_KEY":
+                                self.aws_secret_access_key = value
+                            elif key == "AWS_REGION":
+                                self.aws_region = value
+                            elif key == "AWS_LOGS_BUCKET":
+                                self.aws_logs_bucket = value
+
+                # Vérifier que toutes les variables requises sont définies
+                required_vars = [
+                    "aws_access_key_id",
+                    "aws_secret_access_key",
+                    "aws_region",
+                    "aws_logs_bucket",
+                ]
+                missing_vars = [var for var in required_vars if not hasattr(self, var)]
+
+                if missing_vars:
+                    logger.error(f"Variables AWS manquantes: {missing_vars}")
+                    sys.exit(1)
+            else:
+                logger.error(
+                    f"Fichier d'environnement AWS non trouvé: {self.aws_env_file}"
+                )
                 sys.exit(1)
-            
-            # Lire et parser le fichier
-            with open(self.aws_env_file, "r", encoding="utf-8") as f:
-                content = f.read()
-            
-            for line in content.split("\n"):
-                if line.startswith("export "):
-                    cleaned = line.replace("export ", "").strip()
-                    if "=" in cleaned:
-                        key, value = cleaned.split("=", 1)
-                        value = value.strip().strip('"').strip("'")
-                        
-                        if key == "AWS_ACCESS_KEY_ID":
-                            self.aws_access_key_id = value
-                        elif key == "AWS_SECRET_ACCESS_KEY":
-                            self.aws_secret_access_key = value
-                        elif key == "AWS_REGION":
-                            self.aws_region = value
-                        elif key == "AWS_LOGS_BUCKET":
-                            self.aws_logs_bucket = value
-            
-            # Vérifier que toutes les variables requises sont définies
-            required_vars = [
-                "aws_access_key_id",
-                "aws_secret_access_key",
-                "aws_region",
-                "aws_logs_bucket"
-            ]
-            missing_vars = [var for var in required_vars if not hasattr(self, var) or not getattr(self, var)]
-            
-            if missing_vars:
-                log("ERROR", f"Variables AWS manquantes: {', '.join(missing_vars)}")
-                sys.exit(1)
-        except Exception as error:
-            log("ERROR", f"Erreur lors du chargement des credentials AWS: {error}")
+        except Exception as e:
+            logger.error(f"Erreur lors du chargement des credentials AWS: {e}")
             sys.exit(1)
-    
+
     def collect_docker_logs(self):
-        """Collecte les logs Docker des 2 dernières minutes"""
+        """Collecte les logs de tous les containers Docker en copiant les fichiers JSON"""
         try:
-            log("INFO", "Début de la collecte des logs Docker")
+            # Créer le répertoire de base
+            self.log_base_dir.mkdir(parents=True, exist_ok=True)
+
+            # Obtenir la date et heure actuelles à Paris
+            now = self.get_paris_time()
+            date_str = now.strftime("%Y-%m-%d")
+            time_str = now.strftime("%Hh%Mmin")
+
             collected_logs = []
-            two_minutes_ago = (datetime.now() - timedelta(minutes=2)).timestamp()
-            
-            # Parcourir tous les containers
-            if not os.path.exists(self.docker_log_dir):
-                log("WARN", f"Répertoire Docker non trouvé: {self.docker_log_dir}")
-                return collected_logs
-            
-            for container_id in os.listdir(self.docker_log_dir):
-                container_path = os.path.join(self.docker_log_dir, container_id)
-                if not os.path.isdir(container_path):
-                    continue
-                
-                # Récupérer le nom du container
-                try:
-                    result = subprocess.run(
-                        ['docker', 'inspect', '--format', '{{.Name}}', container_id],
-                        capture_output=True,
-                        text=True,
-                        timeout=30
-                    )
-                    if result.stdout and result.stdout.strip():
-                        container_name = result.stdout.strip().lstrip('/')
-                    else:
-                        container_name = container_id[:12]
-                except Exception:
-                    container_name = container_id[:12]
-                
-                # Date actuelle à Paris
-                now_paris = self.get_paris_time()
-                date_str = now_paris.strftime("%Y-%m-%d")
-                hour_str = f"{now_paris.hour:02d}h00min"
-                
-                # Créer le répertoire pour ce container
-                container_log_dir = os.path.join(self.log_base_dir, container_name, date_str)
-                os.makedirs(container_log_dir, exist_ok=True)
-                
-                # Chercher les fichiers de logs JSON
-                log_files = [f for f in os.listdir(container_path) if f.endswith("-json.log")]
-                
-                if not log_files:
-                    continue
-                
-                for log_file_name in log_files:
-                    log_file_path = os.path.join(container_path, log_file_name)
-                    
+            temp_files_to_cleanup = []  # Liste des fichiers temporaires à nettoyer
+
+            # Parcourir tous les containers Docker
+            for container_dir in self.docker_log_dir.iterdir():
+                if container_dir.is_dir():
+                    container_id = container_dir.name
+
+                    # Obtenir le nom du container depuis Docker
                     try:
-                        # Copier le fichier temporairement
-                        temp_log_file = os.path.join(container_log_dir, f"{container_id}_{log_file_name}_temp")
-                        shutil.copy2(log_file_path, temp_log_file)
-                        
-                        # Lire et parser les logs
-                        new_all_logs = []
-                        new_error_logs = []
-                        
-                        with open(temp_log_file, "r", encoding="utf-8", errors="ignore") as f:
-                            for line in f:
-                                try:
-                                    log_entry = json.loads(line.strip())
-                                    log_time_str = log_entry.get("time", "")
-                                    
-                                    if log_time_str:
-                                        # Parser le timestamp
-                                        log_time = datetime.fromisoformat(log_time_str.replace("Z", "+00:00"))
-                                        log_timestamp = log_time.timestamp()
-                                        
-                                        # Vérifier si le log est dans les 2 dernières minutes
-                                        if log_timestamp >= two_minutes_ago:
-                                            log_output = log_entry.get("log", "")
-                                            stream = log_entry.get("stream", "stdout")
-                                            
-                                            if stream == "stderr":
-                                                new_error_logs.append(log_output)
-                                            new_all_logs.append(log_output)
-                                except (json.JSONDecodeError, ValueError, KeyError):
-                                    continue
-                        
-                        # Écrire dans les fichiers temporaires par heure
-                        if new_all_logs:
-                            output_file_all = os.path.join(container_log_dir, f"{hour_str}_all.log")
-                            with open(output_file_all, "a", encoding="utf-8") as f:
-                                f.writelines(new_all_logs)
-                            
-                            if output_file_all not in collected_logs:
-                                collected_logs.append(output_file_all)
-                            
-                            kept_lines = len(new_all_logs)
-                            log("INFO", f"Logs ajoutés au fichier temporaire: {output_file_all} ({kept_lines} nouvelles lignes des 2 dernières minutes)")
-                        
-                        if new_error_logs:
-                            output_file_errors = os.path.join(container_log_dir, f"{hour_str}_errors.log")
-                            with open(output_file_errors, "a", encoding="utf-8") as f:
-                                f.writelines(new_error_logs)
-                            
-                            if output_file_errors not in collected_logs:
-                                collected_logs.append(output_file_errors)
-                            
-                            log("INFO", f"Erreurs ajoutées au fichier temporaire: {output_file_errors} ({len(new_error_logs)} nouvelles lignes d'erreur)")
-                        
-                        # Supprimer le fichier temporaire
-                        if os.path.exists(temp_log_file):
-                            os.unlink(temp_log_file)
-                    except Exception as error:
-                        log("ERROR", f"Erreur lors de la lecture du log {log_file_name}: {error}")
-                        continue
-            
-            log("INFO", f"Collecte terminée. {len(collected_logs)} fichiers temporaires mis à jour.")
-            return collected_logs
-        except Exception as error:
-            log("ERROR", f"Erreur lors de la collecte des logs: {error}")
-            return []
-    
-    def should_upload(self):
-        """Retourne True si on doit uploader (dans les 2 premières minutes de l'heure)"""
-        now_paris = self.get_paris_time()
-        return now_paris.minute < 2
-    
-    def upload_to_s3(self, log_files):
-        """Upload les logs vers S3 (seulement si on est dans les 2 premières minutes de l'heure)"""
-        if not self.should_upload():
-            log("INFO", "Ce n'est pas le moment d'uploader (seulement dans les 2 premières minutes de l'heure)")
-            return
-        
-        try:
-            # Calculer l'heure précédente
-            now_paris = self.get_paris_time()
-            previous_hour = now_paris - timedelta(hours=1)
-            previous_date_str = previous_hour.strftime("%Y-%m-%d")
-            previous_hour_str = f"{previous_hour.hour:02d}h00min"
-            
-            files_to_upload = []
-            
-            # Parcourir tous les containers
-            if os.path.exists(self.log_base_dir):
-                for container_dir_name in os.listdir(self.log_base_dir):
-                    container_dir = os.path.join(self.log_base_dir, container_dir_name)
-                    if not os.path.isdir(container_dir):
-                        continue
-                    
-                    date_dir = os.path.join(container_dir, previous_date_str)
-                    if os.path.exists(date_dir):
-                        # Chercher les fichiers de l'heure précédente
-                        for file_name in os.listdir(date_dir):
-                            if file_name.startswith(previous_hour_str) and file_name.endswith(".log"):
-                                file_path = os.path.join(date_dir, file_name)
-                                if os.path.isfile(file_path):
-                                    files_to_upload.append(file_path)
-            
-            if not files_to_upload:
-                log("INFO", "Aucun fichier à uploader pour l'heure précédente")
-                return
-            
-            log("INFO", f"Début de l'upload de {len(files_to_upload)} fichiers vers S3")
-            uploaded_count = 0
-            
-            for log_file in files_to_upload:
-                if not os.path.exists(log_file):
-                    log("WARN", f"Fichier non trouvé: {log_file}")
-                    continue
-                
-                # Créer le chemin S3 avec extension .log.gz
-                relative_path = log_file.replace(self.log_base_dir + "/", "")
-                s3_key = f"{self.env}/{relative_path}.gz"
-                
-                # Compresser le fichier
-                compressed_file = log_file + ".gz"
-                try:
-                    with open(log_file, "rb") as f_in:
-                        with gzip.open(compressed_file, "wb") as f_out:
-                            shutil.copyfileobj(f_in, f_out)
-                    
-                    # Upload vers S3
-                    with open(compressed_file, "rb") as f:
-                        self.s3_client.put_object(
-                            Bucket=self.aws_logs_bucket,
-                            Key=s3_key,
-                            Body=f
+                        result = subprocess.run(
+                            [
+                                "docker",
+                                "inspect",
+                                "--format",
+                                "{{.Name}}",
+                                container_id,
+                            ],
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
                         )
-                    
-                    log("INFO", f"Upload réussi: s3://{self.aws_logs_bucket}/{s3_key}")
+                        if result.returncode == 0:
+                            container_name = result.stdout.strip().lstrip("/")
+                        else:
+                            container_name = container_id
+                    except Exception:
+                        container_name = container_id
+
+                    # Créer le répertoire pour ce container
+                    container_log_dir = self.log_base_dir / container_name / date_str
+                    container_log_dir.mkdir(parents=True, exist_ok=True)
+
+                    # Chercher les fichiers de logs JSON
+                    log_files = list(container_dir.glob("*-json.log"))
+
+                    for log_file in log_files:
+                        try:
+                            # Créer une copie temporaire du fichier de log
+                            temp_log_file = (
+                                container_log_dir
+                                / f"{container_id}_{log_file.name}_temp"
+                            )
+                            shutil.copy2(log_file, temp_log_file)
+                            temp_files_to_cleanup.append(str(temp_log_file))
+
+                            # Lire le contenu du fichier temporaire
+                            try:
+                                with open(temp_log_file, "r", encoding="utf-8") as f:
+                                    log_lines = f.readlines()
+                            except UnicodeDecodeError:
+                                # Essayer avec un encodage différent si UTF-8 échoue
+                                with open(temp_log_file, "r", encoding="latin-1") as f:
+                                    log_lines = f.readlines()
+
+                            if log_lines:
+                                # Créer le nom du fichier de sortie avec l'heure actuelle à Paris
+                                current_time = self.get_paris_time()
+                                time_str = current_time.strftime("%Hh%Mmin")
+
+                                # Séparer les logs stdout et stderr
+                                all_logs = []
+                                error_logs = []
+
+                                # Calculer le timestamp de 1h en arrière
+                                one_hour_ago = time.time() - 3600  # 1 heure en secondes
+
+                                total_lines = len(log_lines)
+                                processed_lines = 0
+                                kept_lines = 0
+
+                                for line in log_lines:
+                                    try:
+                                        # Parser la ligne JSON Docker
+                                        log_entry = json.loads(line.strip())
+
+                                        processed_lines += 1
+
+                                        # Vérifier si le log date de moins d'1h
+                                        log_timestamp = log_entry.get("time", "")
+                                        if log_timestamp:
+                                            # Convertir le timestamp en secondes
+                                            try:
+                                                # Le timestamp Docker est au format "2024-01-27T10:30:45.123456789Z"
+                                                log_time = datetime.fromisoformat(
+                                                    log_timestamp.replace("Z", "+00:00")
+                                                )
+                                                log_timestamp_seconds = (
+                                                    log_time.timestamp()
+                                                )
+
+                                                # Ne garder que les logs de la dernière heure
+                                                if (
+                                                    log_timestamp_seconds
+                                                    >= one_hour_ago
+                                                ):
+                                                    kept_lines += 1
+                                                    # Ajouter à tous les logs
+                                                    all_logs.append(line)
+
+                                                    # Ajouter aux erreurs si c'est stderr
+                                                    if (
+                                                        log_entry.get("stream")
+                                                        == "stderr"
+                                                    ):
+                                                        error_logs.append(line)
+                                            except (ValueError, TypeError):
+                                                # Si le timestamp est invalide, ignorer cette ligne
+                                                continue
+                                        else:
+                                            # Si pas de timestamp, ignorer cette ligne
+                                            continue
+
+                                    except json.JSONDecodeError:
+                                        # Si ce n'est pas du JSON valide, ignorer cette ligne
+                                        continue
+
+                                # Créer le fichier avec tous les logs
+                                if all_logs:
+                                    output_file_all = (
+                                        container_log_dir / f"{time_str}_all.log"
+                                    )
+                                    with open(
+                                        output_file_all, "w", encoding="utf-8"
+                                    ) as f:
+                                        f.writelines(all_logs)
+                                    collected_logs.append(str(output_file_all))
+                                    logger.info(
+                                        f"Log complet collecté: {output_file_all} ({kept_lines}/{total_lines} lignes depuis 1h)"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"Aucun log récent trouvé pour le container: {container_name} (traité {total_lines} lignes)"
+                                    )
+
+                                # Créer le fichier avec seulement les erreurs
+                                if error_logs:
+                                    output_file_errors = (
+                                        container_log_dir / f"{time_str}_errors.log"
+                                    )
+                                    with open(
+                                        output_file_errors, "w", encoding="utf-8"
+                                    ) as f:
+                                        f.writelines(error_logs)
+                                    collected_logs.append(str(output_file_errors))
+                                    logger.info(
+                                        f"Log erreurs collecté: {output_file_errors} ({len(error_logs)} lignes d'erreur)"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"Aucune erreur détectée pour le container: {container_name}"
+                                    )
+
+                        except Exception as e:
+                            logger.error(
+                                f"Erreur lors de la lecture du log {log_file}: {e}"
+                            )
+
+            logger.info(
+                f"Collecte terminée. {len(collected_logs)} fichiers de logs collectés."
+            )
+
+            # Stocker la liste des fichiers temporaires à nettoyer
+            self.temp_files_to_cleanup = temp_files_to_cleanup
+
+            return collected_logs
+
+        except Exception as e:
+            logger.error(f"Erreur lors de la collecte des logs: {e}")
+            return []
+
+    def upload_to_s3(self, log_files):
+        """Upload les fichiers de logs vers S3"""
+        if not log_files:
+            logger.info("Aucun fichier à uploader.")
+            return
+
+        try:
+            uploaded_count = 0
+
+            for log_file_path in log_files:
+                log_file = Path(log_file_path)
+
+                if not log_file.exists():
+                    logger.warning(f"Fichier non trouvé: {log_file}")
+                    continue
+
+                # Créer le chemin S3 avec extension .log.gz
+                relative_path = log_file.relative_to(self.log_base_dir)
+                s3_key = f"{self.env}/{relative_path}.gz"
+
+                # Compresser le fichier
+                compressed_file = log_file.with_suffix(".log.gz")
+                with open(log_file, "rb") as f_in:
+                    with gzip.open(compressed_file, "wb") as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+
+                # Upload vers S3
+                try:
+                    self.s3_client.upload_file(
+                        str(compressed_file), self.aws_logs_bucket, s3_key
+                    )
+                    logger.info(f"Upload réussi: s3://{self.aws_logs_bucket}/{s3_key}")
                     uploaded_count += 1
-                    
+
                     # Supprimer les fichiers locaux après upload réussi
-                    os.unlink(log_file)
-                    os.unlink(compressed_file)
-                except Exception as error:
-                    log("ERROR", f"Erreur lors de l'upload de {log_file}: {error}")
+                    log_file.unlink()
+                    compressed_file.unlink()
+
+                except (ClientError, NoCredentialsError) as e:
+                    logger.error(f"Erreur lors de l'upload de {log_file}: {e}")
                     # Nettoyer le fichier compressé temporaire
-                    if os.path.exists(compressed_file):
-                        os.unlink(compressed_file)
-            
-            log("INFO", f"Upload terminé. {uploaded_count} fichiers uploadés vers S3.")
-            
-            # Nettoyer les fichiers temporaires après upload réussi
+                    if compressed_file.exists():
+                        compressed_file.unlink()
+
+            logger.info(f"Upload terminé. {uploaded_count} fichiers uploadés vers S3.")
+
+            # Nettoyer les fichiers temporaires et vider le répertoire temporaire après upload réussi
             if uploaded_count > 0:
                 self.cleanup_temp_files()
                 self.cleanup_temp_logs()
-        except Exception as error:
-            log("ERROR", f"Erreur lors de l'upload vers S3: {error}")
-    
+
+        except Exception as e:
+            logger.error(f"Erreur lors de l'upload vers S3: {e}")
+
     def cleanup_old_logs(self):
         """Nettoie les anciens logs locaux (plus de 7 jours)"""
         try:
-            max_age = 7 * 24 * 60 * 60  # 7 jours en secondes
-            current_time = datetime.now().timestamp()
-            
-            if os.path.exists(self.log_base_dir):
-                for container_dir_name in os.listdir(self.log_base_dir):
-                    container_dir = os.path.join(self.log_base_dir, container_dir_name)
-                    if not os.path.isdir(container_dir):
-                        continue
-                    
-                    for date_dir_name in os.listdir(container_dir):
-                        date_dir = os.path.join(container_dir, date_dir_name)
-                        if not os.path.isdir(date_dir):
-                            continue
-                        
-                        for file_name in os.listdir(date_dir):
-                            file_path = os.path.join(date_dir, file_name)
-                            if os.path.isfile(file_path):
-                                file_time = os.path.getmtime(file_path)
-                                if current_time - file_time > max_age:
-                                    os.unlink(file_path)
-                                    log("INFO", f"Ancien log supprimé: {file_path}")
-        except Exception as error:
-            log("ERROR", f"Erreur lors du nettoyage des anciens logs: {error}")
-    
+            current_time = time.time()
+            max_age = 7 * 24 * 3600  # 7 jours en secondes
+
+            # Chercher les fichiers _all.log et _errors.log
+            for log_file in self.log_base_dir.rglob("*_all.log"):
+                if current_time - log_file.stat().st_mtime > max_age:
+                    log_file.unlink()
+                    logger.info(f"Ancien log complet supprimé: {log_file}")
+
+            for log_file in self.log_base_dir.rglob("*_errors.log"):
+                if current_time - log_file.stat().st_mtime > max_age:
+                    log_file.unlink()
+                    logger.info(f"Ancien log erreurs supprimé: {log_file}")
+
+        except Exception as e:
+            logger.error(f"Erreur lors du nettoyage: {e}")
+
+    def cleanup_temp_logs(self):
+        """Vide complètement le répertoire /tmp/docker-logs après upload réussi"""
+        try:
+            if self.log_base_dir.exists():
+                # Supprimer tout le contenu du répertoire
+                shutil.rmtree(self.log_base_dir)
+                # Recréer le répertoire vide
+                self.log_base_dir.mkdir(parents=True, exist_ok=True)
+                logger.info(f"Répertoire temporaire vidé: {self.log_base_dir}")
+            else:
+                logger.info(f"Répertoire temporaire n'existe pas: {self.log_base_dir}")
+
+        except Exception as e:
+            logger.error(f"Erreur lors du nettoyage du répertoire temporaire: {e}")
+
     def cleanup_temp_files(self):
         """Nettoie les fichiers temporaires créés lors de la collecte"""
+        if not hasattr(self, "temp_files_to_cleanup"):
+            return
+
         try:
-            if os.path.exists(self.log_base_dir):
-                for container_dir_name in os.listdir(self.log_base_dir):
-                    container_dir = os.path.join(self.log_base_dir, container_dir_name)
-                    if not os.path.isdir(container_dir):
-                        continue
-                    
-                    for date_dir_name in os.listdir(container_dir):
-                        date_dir = os.path.join(container_dir, date_dir_name)
-                        if not os.path.isdir(date_dir):
-                            continue
-                        
-                        for file_name in os.listdir(date_dir):
-                            if "_temp" in file_name:
-                                file_path = os.path.join(date_dir, file_name)
-                                if os.path.isfile(file_path):
-                                    os.unlink(file_path)
-        except Exception as error:
-            log("ERROR", f"Erreur lors du nettoyage des fichiers temporaires: {error}")
-    
-    def cleanup_temp_logs(self):
-        """Nettoie les fichiers temporaires de l'heure précédente après upload"""
-        try:
-            now_paris = self.get_paris_time()
-            previous_hour = now_paris - timedelta(hours=1)
-            previous_date_str = previous_hour.strftime("%Y-%m-%d")
-            previous_hour_str = f"{previous_hour.hour:02d}h00min"
-            
-            if os.path.exists(self.log_base_dir):
-                for container_dir_name in os.listdir(self.log_base_dir):
-                    container_dir = os.path.join(self.log_base_dir, container_dir_name)
-                    if not os.path.isdir(container_dir):
-                        continue
-                    
-                    date_dir = os.path.join(container_dir, previous_date_str)
-                    if os.path.exists(date_dir):
-                        for file_name in os.listdir(date_dir):
-                            if file_name.startswith(previous_hour_str) and file_name.endswith(".log"):
-                                file_path = os.path.join(date_dir, file_name)
-                                if os.path.isfile(file_path):
-                                    os.unlink(file_path)
-                                    log("INFO", f"Fichier temporaire supprimé: {file_path}")
-        except Exception as error:
-            log("ERROR", f"Erreur lors du nettoyage des fichiers temporaires: {error}")
+            cleaned_count = 0
+            for temp_file_path in self.temp_files_to_cleanup:
+                try:
+                    temp_file = Path(temp_file_path)
+                    if temp_file.exists():
+                        temp_file.unlink()
+                        cleaned_count += 1
+                        logger.info(f"Fichier temporaire supprimé: {temp_file}")
+                except Exception as e:
+                    logger.error(
+                        f"Erreur lors de la suppression du fichier temporaire {temp_file_path}: {e}"
+                    )
+
+            logger.info(
+                f"Nettoyage terminé. {cleaned_count} fichiers temporaires supprimés."
+            )
+
+            # Vider la liste après traitement
+            self.temp_files_to_cleanup = []
+
+        except Exception as e:
+            logger.error(f"Erreur lors du nettoyage des fichiers temporaires: {e}")
+
 
 def main():
     """Point d'entrée principal"""
-    parser = argparse.ArgumentParser(description="Collecte et upload des logs Docker vers S3")
-    parser.add_argument("--env", default="sandbox", help="Environnement (dev, sandbox, prod)")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Service de collecte des logs Docker")
+    parser.add_argument(
+        "--env", default="sandbox", help="Environnement (dev, sandbox, prod)"
+    )
+
     args = parser.parse_args()
-    
+
     service = DockerLogCollectorService(env=args.env)
-    
+
     # Exécution unique (pour cron)
     log_files = service.collect_docker_logs()
     service.upload_to_s3(log_files)
     service.cleanup_old_logs()
+
 
 if __name__ == "__main__":
     main()

@@ -128,25 +128,93 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         logger.info("Installation des dépendances Python (boto3, pytz)...");
 
         // Vérifier que pip est disponible (essayer python3 -m pip d'abord, puis pip3)
-        const pipCheck = await executeHostCommand(
+        let pipCommand = null;
+        
+        // Essayer python3 -m pip d'abord (méthode recommandée)
+        const pipModuleCheck = await executeHostCommand(
           "python3 -m pip --version 2>&1",
           { timeout: 5000 },
         );
-
-        let pipCommand = "python3 -m pip";
-        if (pipCheck.error) {
+        
+        if (!pipModuleCheck.error && pipModuleCheck.stdout.trim()) {
+          pipCommand = "python3 -m pip";
+          logger.info("Utilisation de python3 -m pip");
+        } else {
+          // Essayer pip3
           const pip3Check = await executeHostCommand("pip3 --version 2>&1", {
             timeout: 5000,
           });
-          if (pip3Check.error) {
-            throw new Error(
-              "pip3 n'est pas disponible. Veuillez installer pip3 d'abord (apt-get install python3-pip ou équivalent).",
-            );
+          
+          if (!pip3Check.error && pip3Check.stdout.trim()) {
+            pipCommand = "pip3";
+            logger.info("Utilisation de pip3");
+          } else {
+            // pip n'est pas disponible, essayer de l'installer
+            logger.info("pip3 n'est pas disponible. Tentative d'installation de python3-pip...");
+            
+            // Détecter le gestionnaire de paquets
+            const aptCheck = await executeHostCommand("which apt-get 2>&1", {
+              timeout: 5000,
+            });
+            const yumCheck = await executeHostCommand("which yum 2>&1", {
+              timeout: 5000,
+            });
+            const dnfCheck = await executeHostCommand("which dnf 2>&1", {
+              timeout: 5000,
+            });
+            
+            let installPipCmd = null;
+            if (!aptCheck.error) {
+              installPipCmd = "apt-get update -y && apt-get install -y python3-pip";
+            } else if (!dnfCheck.error) {
+              installPipCmd = "dnf install -y python3-pip";
+            } else if (!yumCheck.error) {
+              installPipCmd = "yum install -y python3-pip";
+            }
+            
+            if (installPipCmd) {
+              logger.info(`Installation de python3-pip via: ${installPipCmd}`);
+              const installPipResult = await executeHostCommand(
+                `${installPipCmd} 2>&1`,
+                { timeout: 120000 },
+              );
+              
+              if (installPipResult.error) {
+                logger.warn("Échec de l'installation de python3-pip", {
+                  stderr: installPipResult.stderr,
+                  stdout: installPipResult.stdout,
+                });
+              } else {
+                logger.info("python3-pip installé avec succès");
+                // Réessayer python3 -m pip
+                const pipModuleCheck2 = await executeHostCommand(
+                  "python3 -m pip --version 2>&1",
+                  { timeout: 5000 },
+                );
+                if (!pipModuleCheck2.error) {
+                  pipCommand = "python3 -m pip";
+                }
+              }
+            }
+            
+            // Si pip n'est toujours pas disponible après tentative d'installation
+            if (!pipCommand) {
+              throw new Error(
+                "pip3 n'est pas disponible et n'a pas pu être installé automatiquement. " +
+                "Veuillez installer python3-pip manuellement sur l'hôte: " +
+                "apt-get install python3-pip (Debian/Ubuntu) ou " +
+                "yum install python3-pip (CentOS/RHEL) ou " +
+                "dnf install python3-pip (Fedora)"
+              );
+            }
           }
-          pipCommand = "pip3";
         }
 
         // Installer les dépendances (sans --quiet pour voir les erreurs)
+        if (!pipCommand) {
+          throw new Error("pip n'est pas disponible");
+        }
+        
         logger.info(`Exécution de: ${pipCommand} install --upgrade boto3 pytz`);
         const installPipResult = await executeHostCommand(
           `${pipCommand} install --upgrade boto3 pytz 2>&1`,
