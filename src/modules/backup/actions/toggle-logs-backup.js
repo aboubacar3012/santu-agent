@@ -134,35 +134,99 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         );
       }
 
-      // 4. Installer les dépendances npm si nécessaire (pour @aws-sdk/client-s3)
-      logger.info("Étape 4: Installation des dépendances npm");
+      // 4. Vérifier/Installer les dépendances npm si nécessaire (pour @aws-sdk/client-s3)
+      logger.info("Étape 4: Vérification des dépendances npm");
       const npmDir = "/opt/docker-log-collector";
-      await executeHostCommand(`mkdir -p '${npmDir}'`, { timeout: 5000 });
       
-      // Créer un package.json minimal pour installer @aws-sdk/client-s3
-      const packageJson = JSON.stringify({
-        name: "docker-log-collector",
-        version: "1.0.0",
-        type: "module",
-        dependencies: {
-          "@aws-sdk/client-s3": "^3.700.0",
-        },
-      });
-      const escapedPackageJson = escapeShellContent(packageJson);
-      await executeHostCommand(
-        `printf '%s' '${escapedPackageJson}' > '${npmDir}/package.json'`
+      // Vérifier d'abord si le module est déjà installé localement
+      const checkLocalModule = await executeHostCommand(
+        `test -d '${npmDir}/node_modules/@aws-sdk/client-s3' && echo 'exists' || echo 'not_exists'`
       );
 
-      // Installer les dépendances
-      const installNpmResult = await executeHostCommand(
-        `cd '${npmDir}' && npm install --production --no-save`,
-        { timeout: 300000 }
+      // Vérifier aussi dans les node_modules globaux (si npm global prefix existe)
+      const checkGlobalPrefix = await executeHostCommand(
+        `npm config get prefix 2>/dev/null || echo ''`
       );
+      let checkGlobalModule = { stdout: "not_exists" };
+      if (checkGlobalPrefix.stdout.trim()) {
+        const globalNodeModules = `${checkGlobalPrefix.stdout.trim()}/lib/node_modules/@aws-sdk/client-s3`;
+        checkGlobalModule = await executeHostCommand(
+          `test -d '${globalNodeModules}' && echo 'exists' || echo 'not_exists'`
+        );
+      }
 
-      if (installNpmResult.error) {
-        logger.warn("Erreur lors de l'installation des dépendances npm", {
-          stderr: installNpmResult.stderr,
+      const moduleExists = 
+        checkLocalModule.stdout.trim() === "exists" || 
+        checkGlobalModule.stdout.trim() === "exists";
+
+      if (moduleExists) {
+        logger.info("Le module @aws-sdk/client-s3 est déjà disponible");
+        // S'assurer que le répertoire existe pour NODE_PATH
+        await executeHostCommand(`mkdir -p '${npmDir}'`, { timeout: 5000 });
+      } else {
+        // Le module n'existe pas, l'installer
+        logger.info("Installation de @aws-sdk/client-s3...");
+        await executeHostCommand(`mkdir -p '${npmDir}'`, { timeout: 5000 });
+        
+        // Créer un package.json minimal pour installer @aws-sdk/client-s3
+        const packageJson = JSON.stringify({
+          name: "docker-log-collector",
+          version: "1.0.0",
+          type: "module",
+          dependencies: {
+            "@aws-sdk/client-s3": "^3.975.0",
+          },
         });
+        const escapedPackageJson = escapeShellContent(packageJson);
+        const createPackageJsonResult = await executeHostCommand(
+          `printf '%s' '${escapedPackageJson}' > '${npmDir}/package.json'`
+        );
+
+        if (createPackageJsonResult.error) {
+          throw new Error(
+            `Erreur lors de la création du package.json: ${createPackageJsonResult.stderr}`
+          );
+        }
+
+        // Vérifier que npm est disponible
+        const npmCheckResult = await executeHostCommand("which npm", {
+          timeout: 5000,
+        });
+
+        if (npmCheckResult.error || !npmCheckResult.stdout.trim()) {
+          throw new Error(
+            "npm n'est pas installé. Veuillez installer Node.js et npm d'abord."
+          );
+        }
+
+        // Installer les dépendances (via nsenter, donc sur l'hôte)
+        const installNpmResult = await executeHostCommand(
+          `cd '${npmDir}' && npm install --production --no-save --loglevel=error`,
+          { timeout: 300000 }
+        );
+
+        if (installNpmResult.error) {
+          logger.error("Erreur lors de l'installation des dépendances npm", {
+            stderr: installNpmResult.stderr,
+            stdout: installNpmResult.stdout,
+          });
+          throw new Error(
+            `Échec de l'installation des dépendances npm: ${installNpmResult.stderr}`
+          );
+        }
+
+        // Vérifier que le module est bien installé
+        const moduleCheckResult = await executeHostCommand(
+          `test -d '${npmDir}/node_modules/@aws-sdk/client-s3' && echo 'exists' || echo 'not_exists'`
+        );
+
+        if (moduleCheckResult.stdout.trim() !== "exists") {
+          throw new Error(
+            `Le module @aws-sdk/client-s3 n'a pas été installé correctement dans ${npmDir}/node_modules`
+          );
+        }
+
+        logger.info("Dépendances npm installées avec succès");
       }
 
       // 5. Créer la tâche cron (toutes les 2 minutes)
