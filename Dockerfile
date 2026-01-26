@@ -5,7 +5,7 @@ WORKDIR /app
 # Installer les outils nécessaires pour parler au daemon Docker de l'hôte
 # util-linux pour nsenter (permettre d'exécuter des commandes sur l'hôte)
 # curl pour les requêtes HTTP (utilisé par Ansible pour vérifier l'installation)
-# python3, pip et les dépendances pour le script de backup des logs
+# python3 et pip pour le script de backup des logs
 # Mettre à jour les index des dépôts avant d'installer les packages
 RUN apk update && \
     apk add --no-cache \
@@ -14,9 +14,10 @@ RUN apk update && \
     curl \
     python3 \
     py3-pip \
-    py3-boto3 \
-    py3-pytz \
     && rm -rf /var/cache/apk/*
+
+# Installer les dépendances Python pour le script de backup des logs
+RUN pip3 install --no-cache-dir boto3 pytz
 
 # Copier les manifestes npm
 COPY package.json package-lock.json* ./
