@@ -50,7 +50,7 @@ export async function addCronJob(params = {}, callbacks = {}) {
       userId,
       companyId,
       ["ADMIN", "OWNER", "EDITOR"],
-      "ajouter une tâche cron"
+      "ajouter une tâche cron",
     );
 
     // Valider les paramètres
@@ -69,7 +69,7 @@ export async function addCronJob(params = {}, callbacks = {}) {
 
     if (!fileName) {
       throw new Error(
-        "Impossible de générer un nom de fichier valide à partir du nom de la tâche"
+        "Impossible de générer un nom de fichier valide à partir du nom de la tâche",
       );
     }
 
@@ -83,7 +83,7 @@ export async function addCronJob(params = {}, callbacks = {}) {
 
     // S'assurer que le répertoire /etc/cron.d existe
     const mkdirResult = await executeHostCommand(
-      `mkdir -p '${cronDir}' && chmod 755 '${cronDir}'`
+      `mkdir -p '${cronDir}' && chmod 755 '${cronDir}'`,
     );
     if (mkdirResult.error) {
       logger.warn("Erreur lors de la création du répertoire cron.d", {
@@ -121,15 +121,17 @@ export async function addCronJob(params = {}, callbacks = {}) {
     // Créer ou écraser le fichier
     logger.debug(
       fileExists ? "Écrasement du fichier cron" : "Création du fichier cron",
-      { filePath }
+      { filePath },
     );
+    // Utiliser printf avec %s\n pour garantir la nouvelle ligne à la fin
+    // Les fichiers /etc/cron.d/ DOIVENT se terminer par une nouvelle ligne
     const writeResult = await executeHostCommand(
-      `printf '%s' '${escapedContent}' > '${filePath}' && chmod 644 '${filePath}' && chown root:root '${filePath}'`
+      `printf '%s\\n' '${escapedContent.trim()}' > '${filePath}' && chmod 644 '${filePath}' && chown root:root '${filePath}'`,
     );
 
     if (writeResult.error) {
       throw new Error(
-        `Erreur lors de la création du fichier cron: ${writeResult.stderr}`
+        `Erreur lors de la création du fichier cron: ${writeResult.stderr}`,
       );
     }
 
@@ -141,7 +143,7 @@ export async function addCronJob(params = {}, callbacks = {}) {
         task_name,
         filePath,
         enabled,
-      }
+      },
     );
 
     return {
