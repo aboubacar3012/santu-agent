@@ -10,7 +10,7 @@
 /**
  * Liste blanche des actions Backup autorisées
  */
-const ALLOWED_BACKUP_ACTIONS = ["toggle-logs-backup"];
+const ALLOWED_BACKUP_ACTIONS = ["toggle-logs-backup", "check-logs-backup-status"];
 
 /**
  * Valide qu'une action Backup est autorisée
@@ -114,6 +114,10 @@ export function validateParams(action, params) {
       return {
         enabled: false,
       };
+    }
+    case "check-logs-backup-status": {
+      // Pas de paramètres requis pour cette action
+      return {};
     }
     default:
       return params;
