@@ -51,6 +51,11 @@
  * - Exécution manuelle: node docker_log_collector_service.js --env prod
  * - Via cron: toutes les 2 minutes (format cron: toutes les 2 minutes)
  * - Logs: /var/log/docker-log-collector.log
+ * 
+ * EXEMPLE D'UTILISATION:
+ * sudo node /usr/local/bin/docker_log_collector_service.js --env dev
+ * Ou avec NODE_PATH :
+ * sudo bash -c "export NODE_PATH='/opt/docker-log-collector/node_modules' && node /usr/local/bin/docker_log_collector_service.js --env dev"
  *
  * DÉPENDANCES:
  * - @aws-sdk/client-s3
@@ -187,45 +192,64 @@ class DockerLogCollectorService {
   loadAwsCredentials() {
     /**Charge les credentials AWS depuis le fichier d'environnement*/
     try {
-      if (existsSync(this.aws_env_file)) {
-        const content = readFileSync(this.aws_env_file, "utf-8");
-        const lines = content.split("\n");
-
-        for (const line of lines) {
-          if (line.startsWith("export ")) {
-            const cleaned = line.replace("export ", "").trim();
-            const [key, ...valueParts] = cleaned.split("=");
-            const value = valueParts.join("=").trim().replace(/^"|"$/g, "");
-
-            if (key === "AWS_ACCESS_KEY_ID") {
-              this.aws_access_key_id = value;
-            } else if (key === "AWS_SECRET_ACCESS_KEY") {
-              this.aws_secret_access_key = value;
-            } else if (key === "AWS_REGION") {
-              this.aws_region = value;
-            } else if (key === "AWS_LOGS_BUCKET") {
-              this.aws_logs_bucket = value;
-            }
-          }
-        }
-
-        // Vérifier que toutes les variables requises sont définies
-        const requiredVars = [
-          "aws_access_key_id",
-          "aws_secret_access_key",
-          "aws_region",
-          "aws_logs_bucket",
-        ];
-        const missingVars = requiredVars.filter((varName) => !this[varName]);
-
-        if (missingVars.length > 0) {
-          logger.error(`Variables AWS manquantes: ${missingVars.join(", ")}`);
-          process.exit(1);
-        }
-      } else {
+      // Vérifier les permissions du fichier
+      if (!existsSync(this.aws_env_file)) {
         logger.error(
           `Fichier d'environnement AWS non trouvé: ${this.aws_env_file}`,
         );
+        process.exit(1);
+      }
+
+      // Lire le fichier (readFileSync échouera avec une erreur claire si permissions insuffisantes)
+      let content;
+      try {
+        content = readFileSync(this.aws_env_file, "utf-8");
+      } catch (readError) {
+        if (readError.code === "EACCES" || readError.code === "EPERM") {
+          logger.error(
+            `Permission refusée pour lire le fichier AWS. Le script doit être exécuté en tant que root. Fichier: ${this.aws_env_file}`,
+          );
+          logger.error(
+            `Pour tester manuellement, utilisez: sudo node ${process.argv[1]} --env ${process.env.env || "dev"}`,
+          );
+        } else {
+          logger.error(
+            `Erreur lors de la lecture du fichier AWS: ${readError.message}`,
+          );
+        }
+        process.exit(1);
+      }
+      const lines = content.split("\n");
+
+      for (const line of lines) {
+        if (line.startsWith("export ")) {
+          const cleaned = line.replace("export ", "").trim();
+          const [key, ...valueParts] = cleaned.split("=");
+          const value = valueParts.join("=").trim().replace(/^"|"$/g, "");
+
+          if (key === "AWS_ACCESS_KEY_ID") {
+            this.aws_access_key_id = value;
+          } else if (key === "AWS_SECRET_ACCESS_KEY") {
+            this.aws_secret_access_key = value;
+          } else if (key === "AWS_REGION") {
+            this.aws_region = value;
+          } else if (key === "AWS_LOGS_BUCKET") {
+            this.aws_logs_bucket = value;
+          }
+        }
+      }
+
+      // Vérifier que toutes les variables requises sont définies
+      const requiredVars = [
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "aws_region",
+        "aws_logs_bucket",
+      ];
+      const missingVars = requiredVars.filter((varName) => !this[varName]);
+
+      if (missingVars.length > 0) {
+        logger.error(`Variables AWS manquantes: ${missingVars.join(", ")}`);
         process.exit(1);
       }
     } catch (error) {

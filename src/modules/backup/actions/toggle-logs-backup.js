@@ -164,7 +164,9 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       logger.info("Étape 5: Création de la tâche cron");
       const cronName = "docker-logs-backup";
       const cronFile = `/etc/cron.d/agent-cron-${cronName}`;
-      const cronCommand = `source ${awsEnvFile} && export NODE_PATH='${npmDir}/node_modules' && node ${scriptPath} --env ${env} >> /var/log/docker-log-collector.log 2>&1`;
+      // Le script Node.js lit directement le fichier AWS, pas besoin de source
+      // Utiliser bash explicitement pour garantir que export fonctionne
+      const cronCommand = `bash -c "export NODE_PATH='${npmDir}/node_modules' && node ${scriptPath} --env ${env}" >> /var/log/docker-log-collector.log 2>&1`;
       const cronLine = `*/2 * * * * root ${cronCommand}\n`;
 
       const escapedCron = escapeShellContent(cronLine);
@@ -186,8 +188,10 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
 
       // 7. Test immédiat
       logger.info("Étape 7: Test immédiat du script");
+      // Le script Node.js lit directement le fichier AWS, pas besoin de source
+      // Utiliser bash pour garantir que export fonctionne correctement
       const testResult = await executeHostCommand(
-        `source ${awsEnvFile} && export NODE_PATH='${npmDir}/node_modules' && node ${scriptPath} --env ${env}`,
+        `bash -c "export NODE_PATH='${npmDir}/node_modules' && node ${scriptPath} --env ${env}"`,
         { timeout: 120000 }
       );
 
