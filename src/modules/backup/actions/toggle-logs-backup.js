@@ -134,39 +134,19 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         );
       }
 
-      // 4. Vérifier/Installer les dépendances npm si nécessaire (pour @aws-sdk/client-s3)
-      logger.info("Étape 4: Vérification des dépendances npm");
+      // 4. Installer les dépendances npm (toujours dans /opt/docker-log-collector pour NODE_PATH)
+      logger.info("Étape 4: Installation des dépendances npm");
       const npmDir = "/opt/docker-log-collector";
+      await executeHostCommand(`mkdir -p '${npmDir}'`, { timeout: 5000 });
       
-      // Vérifier d'abord si le module est déjà installé localement
+      // Vérifier si le module est déjà installé au bon endroit
       const checkLocalModule = await executeHostCommand(
         `test -d '${npmDir}/node_modules/@aws-sdk/client-s3' && echo 'exists' || echo 'not_exists'`
       );
 
-      // Vérifier aussi dans les node_modules globaux (si npm global prefix existe)
-      const checkGlobalPrefix = await executeHostCommand(
-        `npm config get prefix 2>/dev/null || echo ''`
-      );
-      let checkGlobalModule = { stdout: "not_exists" };
-      if (checkGlobalPrefix.stdout.trim()) {
-        const globalNodeModules = `${checkGlobalPrefix.stdout.trim()}/lib/node_modules/@aws-sdk/client-s3`;
-        checkGlobalModule = await executeHostCommand(
-          `test -d '${globalNodeModules}' && echo 'exists' || echo 'not_exists'`
-        );
-      }
-
-      const moduleExists = 
-        checkLocalModule.stdout.trim() === "exists" || 
-        checkGlobalModule.stdout.trim() === "exists";
-
-      if (moduleExists) {
-        logger.info("Le module @aws-sdk/client-s3 est déjà disponible");
-        // S'assurer que le répertoire existe pour NODE_PATH
-        await executeHostCommand(`mkdir -p '${npmDir}'`, { timeout: 5000 });
-      } else {
-        // Le module n'existe pas, l'installer
-        logger.info("Installation de @aws-sdk/client-s3...");
-        await executeHostCommand(`mkdir -p '${npmDir}'`, { timeout: 5000 });
+      if (checkLocalModule.stdout.trim() !== "exists") {
+        // Le module n'existe pas au bon endroit, l'installer
+        logger.info(`Installation de @aws-sdk/client-s3 dans ${npmDir}...`);
         
         // Créer un package.json minimal pour installer @aws-sdk/client-s3
         const packageJson = JSON.stringify({
@@ -200,8 +180,9 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         }
 
         // Installer les dépendances (via nsenter, donc sur l'hôte)
+        logger.info("Exécution de npm install...");
         const installNpmResult = await executeHostCommand(
-          `cd '${npmDir}' && npm install --production --no-save --loglevel=error`,
+          `cd '${npmDir}' && npm install --production --no-save --loglevel=error 2>&1`,
           { timeout: 300000 }
         );
 
@@ -211,7 +192,7 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
             stdout: installNpmResult.stdout,
           });
           throw new Error(
-            `Échec de l'installation des dépendances npm: ${installNpmResult.stderr}`
+            `Échec de l'installation des dépendances npm: ${installNpmResult.stderr || installNpmResult.stdout}`
           );
         }
 
@@ -221,12 +202,30 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         );
 
         if (moduleCheckResult.stdout.trim() !== "exists") {
+          logger.error("Le module n'a pas été installé", {
+            npmDir,
+            stdout: installNpmResult.stdout,
+            stderr: installNpmResult.stderr,
+          });
           throw new Error(
             `Le module @aws-sdk/client-s3 n'a pas été installé correctement dans ${npmDir}/node_modules`
           );
         }
 
         logger.info("Dépendances npm installées avec succès");
+      } else {
+        logger.info(`Le module @aws-sdk/client-s3 est déjà installé dans ${npmDir}/node_modules`);
+      }
+      
+      // Vérification finale que le module est bien présent
+      const finalCheck = await executeHostCommand(
+        `test -d '${npmDir}/node_modules/@aws-sdk/client-s3' && echo 'exists' || echo 'not_exists'`
+      );
+      
+      if (finalCheck.stdout.trim() !== "exists") {
+        throw new Error(
+          `Le module @aws-sdk/client-s3 n'est pas présent dans ${npmDir}/node_modules après installation/vérification`
+        );
       }
 
       // 5. Créer la tâche cron (toutes les 2 minutes)
@@ -259,6 +258,17 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       logger.info("Étape 7: Test immédiat du script");
       // Le script Node.js lit directement le fichier AWS, pas besoin de source
       // Utiliser bash pour garantir que export fonctionne correctement
+      // Vérifier d'abord que le module est bien présent
+      const verifyModule = await executeHostCommand(
+        `test -d '${npmDir}/node_modules/@aws-sdk/client-s3' && echo 'exists' || echo 'not_exists'`
+      );
+      
+      if (verifyModule.stdout.trim() !== "exists") {
+        throw new Error(
+          `Le module @aws-sdk/client-s3 n'est pas présent dans ${npmDir}/node_modules avant le test`
+        );
+      }
+      
       const testResult = await executeHostCommand(
         `bash -c "export NODE_PATH='${npmDir}/node_modules' && node ${scriptPath} --env ${env}"`,
         { timeout: 120000 }
