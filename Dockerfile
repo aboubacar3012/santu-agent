@@ -17,7 +17,8 @@ RUN apk update && \
     && rm -rf /var/cache/apk/*
 
 # Installer les dépendances Python pour le script de backup des logs
-RUN pip3 install --no-cache-dir boto3 pytz
+# Utiliser --break-system-packages car nous sommes dans un conteneur isolé
+RUN pip3 install --break-system-packages --no-cache-dir boto3 pytz
 
 # Copier les manifestes npm
 COPY package.json package-lock.json* ./
