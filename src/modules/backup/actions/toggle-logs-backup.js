@@ -92,12 +92,12 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
 
       const escapedAwsEnv = escapeShellContent(awsEnvContent);
       const createAwsEnvResult = await executeHostCommand(
-        `printf '%s' '${escapedAwsEnv}' > '${awsEnvFile}' && chmod 600 '${awsEnvFile}' && chown root:root '${awsEnvFile}'`
+        `printf '%s' '${escapedAwsEnv}' > '${awsEnvFile}' && chmod 600 '${awsEnvFile}' && chown root:root '${awsEnvFile}'`,
       );
 
       if (createAwsEnvResult.error) {
         throw new Error(
-          `Erreur lors de la création du fichier AWS: ${createAwsEnvResult.stderr}`
+          `Erreur lors de la création du fichier AWS: ${createAwsEnvResult.stderr}`,
         );
       }
 
@@ -109,7 +109,7 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
 
       if (pythonCheckResult.error || !pythonCheckResult.stdout.trim()) {
         throw new Error(
-          "Python3 n'est pas installé. Veuillez installer Python3 d'abord."
+          "Python3 n'est pas installé. Veuillez installer Python3 d'abord.",
         );
       }
 
@@ -117,11 +117,11 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       logger.info("Étape 3: Vérification des dépendances Python");
       const boto3Check = await executeHostCommand(
         "python3 -c 'import boto3' 2>&1",
-        { timeout: 5000 }
+        { timeout: 5000 },
       );
       const pytzCheck = await executeHostCommand(
         "python3 -c 'import pytz' 2>&1",
-        { timeout: 5000 }
+        { timeout: 5000 },
       );
 
       if (boto3Check.error || pytzCheck.error) {
@@ -129,13 +129,13 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
 
         // Vérifier que pip est disponible (essayer python3 -m pip d'abord, puis pip3)
         let pipCommand = null;
-        
+
         // Essayer python3 -m pip d'abord (méthode recommandée)
         const pipModuleCheck = await executeHostCommand(
           "python3 -m pip --version 2>&1",
           { timeout: 5000 },
         );
-        
+
         if (!pipModuleCheck.error && pipModuleCheck.stdout.trim()) {
           pipCommand = "python3 -m pip";
           logger.info("Utilisation de python3 -m pip");
@@ -144,14 +144,16 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
           const pip3Check = await executeHostCommand("pip3 --version 2>&1", {
             timeout: 5000,
           });
-          
+
           if (!pip3Check.error && pip3Check.stdout.trim()) {
             pipCommand = "pip3";
             logger.info("Utilisation de pip3");
           } else {
             // pip n'est pas disponible, essayer de l'installer
-            logger.info("pip3 n'est pas disponible. Tentative d'installation de python3-pip...");
-            
+            logger.info(
+              "pip3 n'est pas disponible. Tentative d'installation de python3-pip...",
+            );
+
             // Détecter le gestionnaire de paquets
             const aptCheck = await executeHostCommand("which apt-get 2>&1", {
               timeout: 5000,
@@ -162,23 +164,24 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
             const dnfCheck = await executeHostCommand("which dnf 2>&1", {
               timeout: 5000,
             });
-            
+
             let installPipCmd = null;
             if (!aptCheck.error) {
-              installPipCmd = "apt-get update -y && apt-get install -y python3-pip";
+              installPipCmd =
+                "apt-get update -y && apt-get install -y python3-pip";
             } else if (!dnfCheck.error) {
               installPipCmd = "dnf install -y python3-pip";
             } else if (!yumCheck.error) {
               installPipCmd = "yum install -y python3-pip";
             }
-            
+
             if (installPipCmd) {
               logger.info(`Installation de python3-pip via: ${installPipCmd}`);
               const installPipResult = await executeHostCommand(
                 `${installPipCmd} 2>&1`,
                 { timeout: 120000 },
               );
-              
+
               if (installPipResult.error) {
                 logger.warn("Échec de l'installation de python3-pip", {
                   stderr: installPipResult.stderr,
@@ -196,15 +199,15 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
                 }
               }
             }
-            
+
             // Si pip n'est toujours pas disponible après tentative d'installation
             if (!pipCommand) {
               throw new Error(
                 "pip3 n'est pas disponible et n'a pas pu être installé automatiquement. " +
-                "Veuillez installer python3-pip manuellement sur l'hôte: " +
-                "apt-get install python3-pip (Debian/Ubuntu) ou " +
-                "yum install python3-pip (CentOS/RHEL) ou " +
-                "dnf install python3-pip (Fedora)"
+                  "Veuillez installer python3-pip manuellement sur l'hôte: " +
+                  "apt-get install python3-pip (Debian/Ubuntu) ou " +
+                  "yum install python3-pip (CentOS/RHEL) ou " +
+                  "dnf install python3-pip (Fedora)",
               );
             }
           }
@@ -214,20 +217,22 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         if (!pipCommand) {
           throw new Error("pip n'est pas disponible");
         }
-        
+
         // Essayer d'abord via apt-get (plus propre pour les systèmes Debian/Ubuntu)
-        logger.info("Tentative d'installation via apt-get (python3-boto3, python3-pytz)...");
+        logger.info(
+          "Tentative d'installation via apt-get (python3-boto3, python3-pytz)...",
+        );
         const aptCheck = await executeHostCommand("which apt-get 2>&1", {
           timeout: 5000,
         });
-        
+
         let installedViaApt = false;
         if (!aptCheck.error) {
           const installAptResult = await executeHostCommand(
             "apt-get update -y >/dev/null 2>&1 && apt-get install -y python3-boto3 python3-pytz 2>&1",
             { timeout: 120000 },
           );
-          
+
           if (!installAptResult.error) {
             // Vérifier que les modules sont maintenant disponibles
             const boto3CheckApt = await executeHostCommand(
@@ -238,69 +243,73 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
               "python3 -c 'import pytz' 2>&1",
               { timeout: 5000 },
             );
-            
+
             if (!boto3CheckApt.error && !pytzCheckApt.error) {
-              logger.info("Dépendances Python installées via apt-get avec succès");
+              logger.info(
+                "Dépendances Python installées via apt-get avec succès",
+              );
               installedViaApt = true;
             }
           }
         }
-        
+
         // Si apt-get a échoué ou n'est pas disponible, utiliser pip avec --break-system-packages
         if (!installedViaApt) {
-          logger.info(`Exécution de: ${pipCommand} install --break-system-packages --upgrade boto3 pytz`);
+          logger.info(
+            `Exécution de: ${pipCommand} install --break-system-packages --upgrade boto3 pytz`,
+          );
           const installPipResult = await executeHostCommand(
             `${pipCommand} install --break-system-packages --upgrade boto3 pytz 2>&1`,
             { timeout: 300000 },
           );
 
-        // Logger le résultat pour debug
-        if (installPipResult.stdout) {
-          logger.debug("Sortie de pip install", {
-            stdout: installPipResult.stdout,
-          });
-        }
-        if (installPipResult.stderr) {
-          logger.debug("Erreur de pip install", {
-            stderr: installPipResult.stderr,
-          });
-        }
+          // Logger le résultat pour debug
+          if (installPipResult.stdout) {
+            logger.debug("Sortie de pip install", {
+              stdout: installPipResult.stdout,
+            });
+          }
+          if (installPipResult.stderr) {
+            logger.debug("Erreur de pip install", {
+              stderr: installPipResult.stderr,
+            });
+          }
 
-        // Vérifier à nouveau après tentative d'installation (même si installPipResult.error)
-        const boto3Check2 = await executeHostCommand(
-          "python3 -c 'import boto3' 2>&1",
-          { timeout: 5000 },
-        );
-        const pytzCheck2 = await executeHostCommand(
-          "python3 -c 'import pytz' 2>&1",
-          { timeout: 5000 },
-        );
-
-        if (boto3Check2.error || pytzCheck2.error) {
-          const missing = [];
-          if (boto3Check2.error) missing.push("boto3");
-          if (pytzCheck2.error) missing.push("pytz");
-
-          const errorMsg =
-            installPipResult.stderr ||
-            installPipResult.stdout ||
-            "Commande échouée";
-          logger.error("Échec de l'installation des dépendances Python", {
-            missing,
-            pipCommand,
-            error: errorMsg,
-            boto3Error: boto3Check2.stderr,
-            pytzError: pytzCheck2.stderr,
-          });
-
-          throw new Error(
-            `Échec de l'installation des dépendances Python. ${missing.join(" et ")} ${missing.length > 1 ? "sont" : "est"} requis. ` +
-              `Erreur: ${errorMsg}. ` +
-              `Veuillez installer manuellement sur l'hôte: ${pipCommand} install boto3 pytz`,
+          // Vérifier à nouveau après tentative d'installation (même si installPipResult.error)
+          const boto3Check2 = await executeHostCommand(
+            "python3 -c 'import boto3' 2>&1",
+            { timeout: 5000 },
           );
-        } else {
-          logger.info("Dépendances Python installées avec succès");
-        }
+          const pytzCheck2 = await executeHostCommand(
+            "python3 -c 'import pytz' 2>&1",
+            { timeout: 5000 },
+          );
+
+          if (boto3Check2.error || pytzCheck2.error) {
+            const missing = [];
+            if (boto3Check2.error) missing.push("boto3");
+            if (pytzCheck2.error) missing.push("pytz");
+
+            const errorMsg =
+              installPipResult.stderr ||
+              installPipResult.stdout ||
+              "Commande échouée";
+            logger.error("Échec de l'installation des dépendances Python", {
+              missing,
+              pipCommand,
+              error: errorMsg,
+              boto3Error: boto3Check2.stderr,
+              pytzError: pytzCheck2.stderr,
+            });
+
+            throw new Error(
+              `Échec de l'installation des dépendances Python. ${missing.join(" et ")} ${missing.length > 1 ? "sont" : "est"} requis. ` +
+                `Erreur: ${errorMsg}. ` +
+                `Veuillez installer manuellement sur l'hôte: ${pipCommand} install boto3 pytz`,
+            );
+          } else {
+            logger.info("Dépendances Python installées avec succès");
+          }
         }
       } else {
         logger.info(
@@ -312,19 +321,21 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       logger.info("Étape 4: Déploiement du script Python");
       const scriptPath = "/usr/local/bin/docker_log_collector_service.py";
       const pythonScript = getPythonScript();
-      
+
       // Encoder le script en base64 pour éviter les problèmes d'échappement
-      const scriptBase64 = Buffer.from(pythonScript, "utf-8").toString("base64");
+      const scriptBase64 = Buffer.from(pythonScript, "utf-8").toString(
+        "base64",
+      );
       const escapedBase64 = escapeShellContent(scriptBase64);
 
       // Utiliser base64 -d (GNU) ou base64 --decode (BSD), avec fallback
       const deployScriptResult = await executeHostCommand(
-        `echo '${escapedBase64}' | (base64 -d 2>/dev/null || base64 --decode 2>/dev/null) > '${scriptPath}' && chmod 755 '${scriptPath}' && chown root:root '${scriptPath}'`
+        `echo '${escapedBase64}' | (base64 -d 2>/dev/null || base64 --decode 2>/dev/null) > '${scriptPath}' && chmod 755 '${scriptPath}' && chown root:root '${scriptPath}'`,
       );
 
       if (deployScriptResult.error) {
         throw new Error(
-          `Erreur lors du déploiement du script: ${deployScriptResult.stderr}`
+          `Erreur lors du déploiement du script: ${deployScriptResult.stderr}`,
         );
       }
 
@@ -333,24 +344,27 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       const cronName = "docker-logs-backup";
       const cronFile = `/etc/cron.d/agent-cron-${cronName}`;
       // Le script Python lit directement le fichier AWS via source
-      const cronCommand = `source ${awsEnvFile} && python3 ${scriptPath} --env ${env} >> /var/log/docker-log-collector.log 2>&1`;
+      // Utiliser bash -c pour que source fonctionne (cron utilise /bin/sh par défaut)
+      const cronCommand = `bash -c "source ${awsEnvFile} && python3 ${scriptPath} --env ${env}" >> /var/log/docker-log-collector.log 2>&1`;
       const cronLine = `*/2 * * * * root ${cronCommand}\n`;
 
       const escapedCron = escapeShellContent(cronLine);
+      // Utiliser echo au lieu de printf pour garantir la nouvelle ligne à la fin
+      // Les fichiers /etc/cron.d/ DOIVENT se terminer par une nouvelle ligne
       const createCronResult = await executeHostCommand(
-        `printf '%s' '${escapedCron}' > '${cronFile}' && chmod 644 '${cronFile}' && chown root:root '${cronFile}'`
+        `echo '${escapedCron}' > '${cronFile}' && chmod 644 '${cronFile}' && chown root:root '${cronFile}'`,
       );
 
       if (createCronResult.error) {
         throw new Error(
-          `Erreur lors de la création de la tâche cron: ${createCronResult.stderr}`
+          `Erreur lors de la création de la tâche cron: ${createCronResult.stderr}`,
         );
       }
 
       // 6. Créer le répertoire de logs
       logger.info("Étape 6: Création du répertoire de logs");
       await executeHostCommand(
-        "mkdir -p /tmp/docker-logs && chmod 755 /tmp/docker-logs"
+        "mkdir -p /tmp/docker-logs && chmod 755 /tmp/docker-logs",
       );
 
       // 7. Test immédiat
@@ -358,7 +372,7 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       // Le script Python lit directement le fichier AWS via source
       const testResult = await executeHostCommand(
         `bash -c "source ${awsEnvFile} && python3 ${scriptPath} --env ${env}"`,
-        { timeout: 120000 }
+        { timeout: 120000 },
       );
 
       if (testResult.error) {
@@ -391,7 +405,9 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       const cronExists = await hostFileExists(cronFile);
 
       if (cronExists) {
-        const deleteCronResult = await executeHostCommand(`rm -f '${cronFile}'`);
+        const deleteCronResult = await executeHostCommand(
+          `rm -f '${cronFile}'`,
+        );
         if (deleteCronResult.error) {
           logger.warn("Erreur lors de la suppression de la tâche cron", {
             stderr: deleteCronResult.stderr,
@@ -403,10 +419,10 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
 
       // 2. Arrêter les processus en cours (optionnel)
       await executeHostCommand(
-        "pkill -f docker_log_collector_service.py || true"
+        "pkill -f docker_log_collector_service.py || true",
       );
 
-      // Note: On garde le fichier AWS et le script JavaScript pour permettre une réactivation rapide
+      // Note: On garde le fichier AWS et le script Python pour permettre une réactivation rapide
 
       return {
         success: true,
