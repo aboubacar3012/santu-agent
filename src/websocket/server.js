@@ -414,6 +414,10 @@ export async function createFrontendServer({
      *
      * Ce handler traite tous les messages JSON reçus du frontend.
      * Format attendu : { id: "req-123", action: "module.action", params: {...} }
+     * 
+     * Messages spéciaux pour le terminal :
+     * - { type: "terminal:input", id: "req-123", data: "..." } : Envoie des données au terminal
+     * - { type: "terminal:resize", id: "req-123", cols: 80, rows: 24 } : Redimensionne le terminal
      *
      * Le message est délégué à handleMessage() qui :
      * - Valide l'action demandée
@@ -436,6 +440,39 @@ export async function createFrontendServer({
           ws.send(
             JSON.stringify(createError("unknown", "Payload JSON invalide"))
           );
+        }
+        return;
+      }
+
+      // Gérer les messages spéciaux pour le terminal (input et resize)
+      if (message?.type === "terminal:input" && message?.id) {
+        const resource = activeResources.get(message.id);
+        if (resource && resource.type === "terminal" && resource.write) {
+          try {
+            resource.write(message.data || "");
+          } catch (error) {
+            logger.error("Erreur lors de l'écriture dans le terminal", {
+              error: error.message,
+              requestId: message.id,
+            });
+          }
+        }
+        return;
+      }
+
+      if (message?.type === "terminal:resize" && message?.id) {
+        const resource = activeResources.get(message.id);
+        if (resource && resource.type === "terminal" && resource.resize) {
+          try {
+            const cols = message.cols || 80;
+            const rows = message.rows || 24;
+            resource.resize(cols, rows);
+          } catch (error) {
+            logger.error("Erreur lors du redimensionnement du terminal", {
+              error: error.message,
+              requestId: message.id,
+            });
+          }
         }
         return;
       }

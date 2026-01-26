@@ -19,6 +19,7 @@ import * as haproxyModule from "./haproxy/index.js";
 import * as activityModule from "./activity/index.js";
 import * as metricsModule from "./metrics/index.js";
 import * as backupModule from "./backup/index.js";
+import * as terminalModule from "./terminal/index.js";
 import { logger } from "../shared/logger.js";
 
 /**
@@ -207,6 +208,22 @@ try {
   logger.info("Module Backup enregistré avec succès");
 } catch (error) {
   logger.error("Erreur lors de l'enregistrement du module Backup", {
+    error: error.message,
+    stack: error.stack,
+  });
+  throw error;
+}
+
+try {
+  logger.debug("Tentative d'enregistrement du module Terminal", {
+    terminalModule,
+    hasActions: !!terminalModule.actions,
+    hasValidator: !!terminalModule.validator,
+  });
+  registerModule("terminal", terminalModule);
+  logger.info("Module Terminal enregistré avec succès");
+} catch (error) {
+  logger.error("Erreur lors de l'enregistrement du module Terminal", {
     error: error.message,
     stack: error.stack,
   });
