@@ -210,16 +210,49 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
           }
         }
 
-        // Installer les dépendances (sans --quiet pour voir les erreurs)
+        // Installer les dépendances
         if (!pipCommand) {
           throw new Error("pip n'est pas disponible");
         }
         
-        logger.info(`Exécution de: ${pipCommand} install --upgrade boto3 pytz`);
-        const installPipResult = await executeHostCommand(
-          `${pipCommand} install --upgrade boto3 pytz 2>&1`,
-          { timeout: 300000 },
-        );
+        // Essayer d'abord via apt-get (plus propre pour les systèmes Debian/Ubuntu)
+        logger.info("Tentative d'installation via apt-get (python3-boto3, python3-pytz)...");
+        const aptCheck = await executeHostCommand("which apt-get 2>&1", {
+          timeout: 5000,
+        });
+        
+        let installedViaApt = false;
+        if (!aptCheck.error) {
+          const installAptResult = await executeHostCommand(
+            "apt-get update -y >/dev/null 2>&1 && apt-get install -y python3-boto3 python3-pytz 2>&1",
+            { timeout: 120000 },
+          );
+          
+          if (!installAptResult.error) {
+            // Vérifier que les modules sont maintenant disponibles
+            const boto3CheckApt = await executeHostCommand(
+              "python3 -c 'import boto3' 2>&1",
+              { timeout: 5000 },
+            );
+            const pytzCheckApt = await executeHostCommand(
+              "python3 -c 'import pytz' 2>&1",
+              { timeout: 5000 },
+            );
+            
+            if (!boto3CheckApt.error && !pytzCheckApt.error) {
+              logger.info("Dépendances Python installées via apt-get avec succès");
+              installedViaApt = true;
+            }
+          }
+        }
+        
+        // Si apt-get a échoué ou n'est pas disponible, utiliser pip avec --break-system-packages
+        if (!installedViaApt) {
+          logger.info(`Exécution de: ${pipCommand} install --break-system-packages --upgrade boto3 pytz`);
+          const installPipResult = await executeHostCommand(
+            `${pipCommand} install --break-system-packages --upgrade boto3 pytz 2>&1`,
+            { timeout: 300000 },
+          );
 
         // Logger le résultat pour debug
         if (installPipResult.stdout) {
@@ -267,6 +300,7 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
           );
         } else {
           logger.info("Dépendances Python installées avec succès");
+        }
         }
       } else {
         logger.info(
