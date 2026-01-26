@@ -101,22 +101,12 @@ export function validateParams(action, params) {
           throw new Error("awsLogsBucket ne peut pas être vide");
         }
 
-        // Validation env (optionnel, défaut: prod)
-        const env = params.env && typeof params.env === "string" 
-          ? params.env.trim() 
-          : "prod";
-        
-        if (!["dev", "sandbox", "prod"].includes(env)) {
-          throw new Error("env doit être 'dev', 'sandbox' ou 'prod'");
-        }
-
         return {
           enabled: true,
           awsAccessKeyId: params.awsAccessKeyId.trim(),
           awsSecretAccessKey: params.awsSecretAccessKey.trim(),
           awsRegion: params.awsRegion.trim(),
           awsLogsBucket: params.awsLogsBucket.trim(),
-          env,
         };
       }
 

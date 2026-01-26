@@ -54,7 +54,6 @@ function getPythonScript() {
  * @param {string} [params.awsSecretAccessKey] - AWS Secret Access Key (requis si enabled)
  * @param {string} [params.awsRegion] - AWS Region (requis si enabled)
  * @param {string} [params.awsLogsBucket] - AWS S3 Bucket pour les logs (requis si enabled)
- * @param {string} [params.env] - Environnement (dev, sandbox, prod) - défaut: prod
  * @param {Object} [callbacks] - Callbacks
  * @returns {Promise<Object>} Résultat de l'opération
  */
@@ -73,8 +72,13 @@ export async function toggleLogsBackup(params = {}, callbacks = {}) {
 
     // Valider les paramètres
     const validatedParams = validateBackupParams("toggle-logs-backup", params);
-    const { enabled, awsAccessKeyId, awsSecretAccessKey, awsRegion, awsLogsBucket, env } =
-      validatedParams;
+    const {
+      enabled,
+      awsAccessKeyId,
+      awsSecretAccessKey,
+      awsRegion,
+      awsLogsBucket,
+    } = validatedParams;
 
     logger.info(
       enabled ? "Activation du backup des logs" : "Désactivation du backup des logs"
@@ -345,9 +349,9 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       logger.info("Étape 5: Création de la tâche cron");
       const cronName = "docker-logs-backup";
 
-      // Le script Python lit directement le fichier AWS via source
+      // Le script Python lit directement le fichier AWS via source et récupère automatiquement le hostname
       // Utiliser bash -c pour que source fonctionne (cron utilise /bin/sh par défaut)
-      const cronCommand = `bash -c "source ${awsEnvFile} && python3 ${scriptPath} --env ${env}" >> /var/log/docker-log-collector.log 2>&1`;
+      const cronCommand = `bash -c "source ${awsEnvFile} && python3 ${scriptPath}" >> /var/log/docker-log-collector.log 2>&1`;
 
       // Utiliser le module cron pour créer la tâche
       const cronResult = await addCronJob(
@@ -384,9 +388,9 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
 
       // 7. Test immédiat
       logger.info("Étape 7: Test immédiat du script");
-      // Le script Python lit directement le fichier AWS via source
+      // Le script Python lit directement le fichier AWS via source et récupère automatiquement le hostname
       const testResult = await executeHostCommand(
-        `bash -c "source ${awsEnvFile} && python3 ${scriptPath} --env ${env}"`,
+        `bash -c "source ${awsEnvFile} && python3 ${scriptPath}"`,
         { timeout: 120000 },
       );
 
@@ -407,7 +411,6 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         awsEnvFile,
         scriptPath,
         cronFile,
-        env,
       };
     } else {
       // ========== DÉSACTIVATION ==========

@@ -19,7 +19,7 @@
 #
 # 2. UPLOAD VERS S3:
 #    - Compresse les logs en .log.gz
-#    - Upload vers S3 avec structure: env/container/date/heure.log.gz
+#    - Upload vers S3 avec structure: hostname/container/date/heure.log.gz
 #    - Supprime les fichiers locaux après upload réussi
 #
 # 3. NETTOYAGE:
@@ -27,7 +27,7 @@
 #    - Vide le répertoire temporaire /tmp/docker-logs/
 #
 # STRUCTURE S3 FINALE:
-# s3://elyamaje-log-files/prod/
+# s3://elyamaje-log-files/vps-old-dev-node/
 # ├── elyamajeplay-backend/
 # │   └── 2025-01-27/
 # │       ├── 11h00min_all.log.gz
@@ -40,12 +40,12 @@
 #         └── 12h00min_errors.log.gz
 #
 # VARIABLES:
-# - env: prod (environnement: dev, sandbox, prod)
+# - hostname: récupéré automatiquement via socket.gethostname()
 # - log_base_dir: /tmp/docker-logs (répertoire de collecte)
 # - aws_env_file: /etc/._4d8f2.sh (fichier d'environnement AWS)
 #
 # USAGE:
-# - Exécution manuelle: python3 docker_log_collector_service.py --env prod
+# - Exécution manuelle: python3 docker_log_collector_service.py
 # - Via cron: */2 * * * * (toutes les 2 minutes) ou 0 * * * * (toutes les heures)
 # - Logs: /var/log/docker-log-collector.log
 #
@@ -68,6 +68,7 @@ import time
 import gzip
 import shutil
 import logging
+import socket
 import subprocess
 import boto3
 import pytz
@@ -88,8 +89,9 @@ logger = logging.getLogger(__name__)
 
 
 class DockerLogCollectorService:
-    def __init__(self, env="sandbox"):
-        self.env = env
+    def __init__(self):
+        # Récupérer le hostname du serveur
+        self.hostname = socket.gethostname()
         self.log_base_dir = Path("/tmp/docker-logs")
         self.docker_log_dir = Path("/var/lib/docker/containers")
         self.aws_env_file = "/etc/._4d8f2.sh"
@@ -353,7 +355,7 @@ class DockerLogCollectorService:
 
                 # Créer le chemin S3 avec extension .log.gz
                 relative_path = log_file.relative_to(self.log_base_dir)
-                s3_key = f"{self.env}/{relative_path}.gz"
+                s3_key = f"{self.hostname}/{relative_path}.gz"
 
                 # Compresser le fichier
                 compressed_file = log_file.with_suffix(".log.gz")
@@ -456,16 +458,7 @@ class DockerLogCollectorService:
 
 def main():
     """Point d'entrée principal"""
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Service de collecte des logs Docker")
-    parser.add_argument(
-        "--env", default="sandbox", help="Environnement (dev, sandbox, prod)"
-    )
-
-    args = parser.parse_args()
-
-    service = DockerLogCollectorService(env=args.env)
+    service = DockerLogCollectorService()
 
     # Exécution unique (pour cron)
     log_files = service.collect_docker_logs()
