@@ -126,27 +126,84 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
 
       if (boto3Check.error || pytzCheck.error) {
         logger.info("Installation des dépendances Python (boto3, pytz)...");
-        const installPipResult = await executeHostCommand(
-          "pip3 install --quiet boto3 pytz 2>&1",
-          { timeout: 120000 }
+
+        // Vérifier que pip est disponible (essayer python3 -m pip d'abord, puis pip3)
+        const pipCheck = await executeHostCommand(
+          "python3 -m pip --version 2>&1",
+          { timeout: 5000 },
         );
 
-        if (installPipResult.error) {
-          logger.warn("Erreur lors de l'installation des dépendances Python", {
-            stderr: installPipResult.stderr,
-            stdout: installPipResult.stdout,
+        let pipCommand = "python3 -m pip";
+        if (pipCheck.error) {
+          const pip3Check = await executeHostCommand("pip3 --version 2>&1", {
+            timeout: 5000,
           });
-          // Vérifier à nouveau après tentative d'installation
-          const boto3Check2 = await executeHostCommand(
-            "python3 -c 'import boto3' 2>&1",
-            { timeout: 5000 }
-          );
-          if (boto3Check2.error) {
+          if (pip3Check.error) {
             throw new Error(
-              `Échec de l'installation des dépendances Python. boto3 est requis: ${installPipResult.stderr || installPipResult.stdout}`
+              "pip3 n'est pas disponible. Veuillez installer pip3 d'abord (apt-get install python3-pip ou équivalent).",
             );
           }
+          pipCommand = "pip3";
         }
+
+        // Installer les dépendances (sans --quiet pour voir les erreurs)
+        logger.info(`Exécution de: ${pipCommand} install --upgrade boto3 pytz`);
+        const installPipResult = await executeHostCommand(
+          `${pipCommand} install --upgrade boto3 pytz 2>&1`,
+          { timeout: 300000 },
+        );
+
+        // Logger le résultat pour debug
+        if (installPipResult.stdout) {
+          logger.debug("Sortie de pip install", {
+            stdout: installPipResult.stdout,
+          });
+        }
+        if (installPipResult.stderr) {
+          logger.debug("Erreur de pip install", {
+            stderr: installPipResult.stderr,
+          });
+        }
+
+        // Vérifier à nouveau après tentative d'installation (même si installPipResult.error)
+        const boto3Check2 = await executeHostCommand(
+          "python3 -c 'import boto3' 2>&1",
+          { timeout: 5000 },
+        );
+        const pytzCheck2 = await executeHostCommand(
+          "python3 -c 'import pytz' 2>&1",
+          { timeout: 5000 },
+        );
+
+        if (boto3Check2.error || pytzCheck2.error) {
+          const missing = [];
+          if (boto3Check2.error) missing.push("boto3");
+          if (pytzCheck2.error) missing.push("pytz");
+
+          const errorMsg =
+            installPipResult.stderr ||
+            installPipResult.stdout ||
+            "Commande échouée";
+          logger.error("Échec de l'installation des dépendances Python", {
+            missing,
+            pipCommand,
+            error: errorMsg,
+            boto3Error: boto3Check2.stderr,
+            pytzError: pytzCheck2.stderr,
+          });
+
+          throw new Error(
+            `Échec de l'installation des dépendances Python. ${missing.join(" et ")} ${missing.length > 1 ? "sont" : "est"} requis. ` +
+              `Erreur: ${errorMsg}. ` +
+              `Veuillez installer manuellement sur l'hôte: ${pipCommand} install boto3 pytz`,
+          );
+        } else {
+          logger.info("Dépendances Python installées avec succès");
+        }
+      } else {
+        logger.info(
+          "Les dépendances Python (boto3, pytz) sont déjà installées",
+        );
       }
 
       // 4. Déployer le script Python
