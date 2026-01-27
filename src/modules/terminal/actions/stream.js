@@ -1,5 +1,128 @@
 /**
- * Action stream - Crée un terminal interactif sur l'hôte
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ACTION: terminal.stream - Terminal Interactif Sécurisé
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * DESCRIPTION:
+ * Ce module crée un terminal interactif et sécurisé sur le serveur hôte.
+ * Chaque utilisateur qui se connecte obtient son propre compte Linux isolé
+ * avec accès restreint et un timeout d'inactivité.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * FONCTIONNEMENT GLOBAL
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * 1. CRÉATION DE L'UTILISATEUR
+ *    - Génère un nom d'utilisateur depuis l'email: "prenom-nom-devoups"
+ *    - Crée un utilisateur Linux avec `useradd -m -s /bin/bash`
+ *    - Crée automatiquement le répertoire home: /home/username-devoups/
+ *    - Configure les permissions: 755 pour le home, 644 pour les fichiers
+ *    - Ajoute l'utilisateur au groupe docker pour gérer les containers
+ *
+ * 2. CONFIGURATION DE L'ENVIRONNEMENT
+ *    - Crée un .bashrc avec alias et message de bienvenue
+ *    - Crée un .bash_profile qui charge le .bashrc
+ *    - Définit les permissions appropriées pour tous les fichiers
+ *    - Crée un répertoire .local pour les fichiers temporaires
+ *
+ * 3. DÉMARRAGE DU SHELL
+ *    - Lance un shell bash via nsenter pour accéder à l'hôte
+ *    - Utilise `su -` pour basculer vers l'utilisateur créé
+ *    - Utilise `script` pour créer un pseudo-terminal (PTY)
+ *    - Démarre dans le répertoire home de l'utilisateur
+ *
+ * 4. STREAMING BIDIRECTIONNEL
+ *    - stdout/stderr → Envoyé au frontend via WebSocket
+ *    - stdin ← Reçu depuis le frontend (frappes clavier)
+ *    - Redimensionnement → Ajuste les colonnes/lignes du terminal
+ *
+ * 5. GESTION DE L'INACTIVITÉ (10 MINUTES)
+ *    - Timer qui se réinitialise à chaque activité:
+ *      • Frappe clavier (stdin)
+ *      • Sortie du terminal (stdout/stderr)
+ *    - Après 10 min d'inactivité:
+ *      • Affiche un avertissement (5 secondes)
+ *      • Ferme le terminal
+ *      • Supprime l'utilisateur et son home
+ *
+ * 6. NETTOYAGE AUTOMATIQUE
+ *    - À la fermeture normale du terminal (exit, Ctrl+D):
+ *      • Annule le timer d'inactivité
+ *      • Tue le processus shell
+ *      • Supprime l'utilisateur et son répertoire home (après 2s)
+ *    - À l'expiration du timer (10 min):
+ *      • Affiche un message d'avertissement
+ *      • Ferme le terminal (après 5s)
+ *      • Supprime l'utilisateur et son home
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * SÉCURITÉ
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * PERMISSIONS REQUISES:
+ * - Rôles autorisés: ADMIN, OWNER, EDITOR
+ * - Vérification via requireRole() avant toute opération
+ *
+ * ISOLATION:
+ * - Chaque utilisateur a son propre compte Linux
+ * - Répertoire home isolé: /home/username-devoups/
+ * - Pas d'accès aux fichiers des autres utilisateurs
+ * - Permissions 755 sur le home (rwxr-xr-x)
+ *
+ * ACCÈS DOCKER:
+ * - Utilisateur ajouté au groupe docker
+ * - Peut gérer les containers (docker ps, logs, exec, etc.)
+ * - Note: Le groupe docker donne des privilèges élevés
+ *
+ * AUTO-NETTOYAGE:
+ * - Suppression automatique après 10 min d'inactivité
+ * - Suppression à la fermeture du terminal
+ * - Aucun compte orphelin ne reste sur le système
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * FLUX DE DONNÉES
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * DÉMARRAGE:
+ * Frontend → WebSocket → { action: "terminal.stream", params: { cols, rows, userEmail } }
+ * Backend → Crée utilisateur → Lance shell → Retourne { isStreaming: true, resource }
+ *
+ * STREAMING:
+ * Shell stdout/stderr → callbacks.onStream("stdout", data) → WebSocket → Frontend
+ * Frontend → WebSocket → { type: "terminal:input", data } → resource.write(data) → Shell stdin
+ *
+ * REDIMENSIONNEMENT:
+ * Frontend → WebSocket → { type: "terminal:resize", cols, rows } → resource.resize()
+ *
+ * FERMETURE:
+ * Shell exit → cleanup() → deleteUser() → WebSocket fermé
+ * Inactivité 10min → cleanup() → deleteUser() → WebSocket fermé
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * EXEMPLE D'UTILISATION
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * const result = await streamTerminal(
+ *   { cols: 120, rows: 32, userEmail: "admin@example.com" },
+ *   {
+ *     onStream: (streamType, data) => {
+ *       // Envoyer au WebSocket
+ *       ws.send(JSON.stringify({ type: "stream", stream: streamType, data }));
+ *     },
+ *     onResource: (resource) => {
+ *       // Stocker pour gérer les inputs/resize
+ *       terminalResources.set(requestId, resource);
+ *     },
+ *     context: { userId, companyId }
+ *   }
+ * );
+ *
+ * // Résultat:
+ * {
+ *   isStreaming: true,
+ *   initialResponse: { message: "Terminal connecté", username, cols, rows },
+ *   resource: { type: "terminal", process, write, resize, cleanup }
+ * }
  *
  * @module modules/terminal/actions/stream
  */
