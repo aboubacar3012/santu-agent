@@ -44,33 +44,39 @@ async function deleteUser(username) {
  * @returns {Promise<string>} Nom d'utilisateur à utiliser
  */
 async function ensureLimitedUser(userEmail) {
-  // Générer le nom d'utilisateur à partir de l'email
-  // Prendre la partie avant le @, remplacer les points par des tirets
-  let username = "devoups-terminal"; // Valeur par défaut
-  
+  // Générer le nom d'utilisateur à partir de l'email + suffixe "devoups"
+  // Format: prenom-nom-devoups
+  let username = "terminal-devoups"; // Valeur par défaut
+
   if (userEmail && typeof userEmail === "string" && userEmail.includes("@")) {
     const localPart = userEmail.split("@")[0];
     // Remplacer les points par des tirets et nettoyer les caractères spéciaux
-    username = localPart
+    let cleanUsername = localPart
       .replace(/\./g, "-")
       .replace(/[^a-z0-9-]/gi, "")
       .toLowerCase();
-    
+
     // S'assurer que le nom d'utilisateur est valide (commence par une lettre ou underscore)
-    if (!/^[a-z_]/.test(username)) {
-      username = "user-" + username;
+    if (!/^[a-z_]/.test(cleanUsername)) {
+      cleanUsername = "user-" + cleanUsername;
     }
-    
+
+    // Ajouter le suffixe -devoups
+    username = cleanUsername + "-devoups";
+
     // Limiter la longueur du nom d'utilisateur (max 32 caractères pour Linux)
     if (username.length > 32) {
-      username = username.substring(0, 32);
+      // Si trop long, raccourcir la partie email pour garder le suffixe -devoups
+      const maxEmailLength = 32 - 8; // 32 - "-devoups".length
+      cleanUsername = cleanUsername.substring(0, maxEmailLength);
+      username = cleanUsername + "-devoups";
     }
-    
+
     logger.info(`Nom d'utilisateur généré depuis l'email: ${username}`);
   } else {
     logger.warn("Email invalide ou manquant, utilisation du nom par défaut");
   }
-  
+
   try {
     // Vérifier si l'utilisateur existe déjà
     const checkUser = await executeCommand(
@@ -158,11 +164,22 @@ async function ensureLimitedUser(userEmail) {
 # Forcer le répertoire HOME
 cd ~ 2>/dev/null || cd /home/${username}
 
-# Empêcher de sortir du répertoire home
-set -o restricted
-
 # Limiter le PATH aux commandes sûres uniquement
 export PATH="/usr/bin:/bin"
+
+# Empêcher de changer de répertoire en dehors du home
+cd() {
+  local target="\${1:-.}"
+  local abs_path=\$(readlink -f "\$target" 2>/dev/null || echo "\$target")
+  
+  # Vérifier si on essaie de sortir du home
+  if [[ "\$abs_path" =~ ^/home/${username} ]] || [ "\$abs_path" = "/home/${username}" ]; then
+    builtin cd "\$@"
+  else
+    echo "Erreur: Vous ne pouvez naviguer que dans votre répertoire home"
+    return 1
+  fi
+}
 
 # Désactiver certaines commandes dangereuses
 alias rm='echo "Commande rm désactivée. Utilisez: trash <fichier>"'
@@ -348,14 +365,14 @@ export async function streamTerminal(params = {}, callbacks = {}) {
     // Créer ou récupérer l'utilisateur limité
     const username = await ensureLimitedUser(userEmail);
 
-    // Créer un processus shell interactif via nsenter avec restrictions
-    // Utiliser script pour créer un PTY interactif avec un shell bash restreint
+    // Créer un processus shell interactif via nsenter
+    // Utiliser script pour créer un PTY interactif avec bash
     // script -q -c "bash" crée un shell interactif avec PTY
     // -q = quiet (pas de message de démarrage)
     // -c = commande à exécuter
     // --login = charger .bash_profile et .bashrc
     // cd ~ = forcer le démarrage dans le répertoire home
-    const shellCommand = `nsenter -t 1 -m -u -i -n -p -- su - ${username} -c "cd /home/${username} && script -q -c 'bash --login' /dev/null"`;
+    const shellCommand = `nsenter -t 1 -m -u -i -n -p -- su - ${username} -c "cd /home/${username} && exec script -q -c 'bash --login' /dev/null"`;
 
     const shellProcess = spawn("sh", ["-c", shellCommand], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -475,13 +492,13 @@ export async function streamTerminal(params = {}, callbacks = {}) {
     // Gérer la fin du processus
     shellProcess.on("exit", (code, signal) => {
       logger.info("Terminal fermé", { code, signal, userId, username });
-      
+
       // Annuler le timer d'inactivité
       if (inactivityTimer) {
         clearTimeout(inactivityTimer);
         inactivityTimer = null;
       }
-      
+
       try {
         callbacks.onStream(
           "stdout",
@@ -492,11 +509,13 @@ export async function streamTerminal(params = {}, callbacks = {}) {
           error: error.message,
         });
       }
-      
+
       cleanup();
-      
+
       // Supprimer l'utilisateur après la fermeture normale
-      logger.info(`Suppression de l'utilisateur ${username} après fermeture du terminal`);
+      logger.info(
+        `Suppression de l'utilisateur ${username} après fermeture du terminal`,
+      );
       setTimeout(() => {
         deleteUser(username);
       }, 2000);
