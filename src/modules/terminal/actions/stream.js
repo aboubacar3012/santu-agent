@@ -169,123 +169,27 @@ async function ensureLimitedUser(userEmail) {
       throw new Error(`Répertoire home manquant pour ${username}`);
     }
 
-    // Créer un .bashrc personnalisé avec restrictions de sécurité
-    const bashrcContent = `# Configuration Devoups Terminal User - Mode Restreint
-
-# Limiter le PATH aux commandes sûres uniquement
-export PATH="/usr/bin:/bin"
-
-# Empêcher de changer de répertoire en dehors du home
-cd() {
-  # Si pas d'argument, aller au home (comportement par défaut)
-  if [ -z "\$1" ]; then
-    builtin cd ~ 2>/dev/null || builtin cd /home/${username}
-    return \$?
-  fi
-  
-  local target="\$1"
-  local current_dir=\$(pwd)
-  
-  # Résoudre le chemin cible
-  if [[ "\$target" = /* ]]; then
-    # Chemin absolu
-    local abs_path="\$target"
-  else
-    # Chemin relatif - combiner avec le répertoire courant
-    if [ "\$target" = ".." ]; then
-      abs_path="\$(dirname "\$current_dir")"
-    elif [ "\$target" = "." ]; then
-      abs_path="\$current_dir"
-    else
-      abs_path="\$current_dir/\$target"
-    fi
-  fi
-  
-  # Normaliser le chemin (enlever les doubles slashes)
-  abs_path="\$(echo "\$abs_path" | sed 's#//*#/#g')"
-  
-  # Vérifier si le chemin est dans le home ou EST le home
-  if [ "\$abs_path" = "/home/${username}" ] || [[ "\$abs_path" = "/home/${username}/"* ]]; then
-    builtin cd "\$target"
-    return \$?
-  else
-    echo "Erreur: Navigation autorisée uniquement dans /home/${username}"
-    return 1
-  fi
-}
-
-# Désactiver certaines commandes dangereuses
-alias rm='echo "Commande rm désactivée. Utilisez: trash <fichier>"'
-alias rmdir='echo "Commande rmdir désactivée."'
-alias mv='echo "Commande mv désactivée pour les fichiers système."'
-alias chmod='echo "Commande chmod désactivée pour les fichiers système."'
-alias chown='echo "Commande chown désactivée."'
-alias chgrp='echo "Commande chgrp désactivée."'
-alias sudo='echo "Commande sudo désactivée."'
-alias su='echo "Commande su désactivée."'
-
-# Fonction pour créer des fichiers/dossiers (autorisé uniquement dans home)
-mkdir() {
-  local target="\$1"
-  if [[ "\$target" =~ ^/home/${username}/ ]] || [[ "\$target" != /* ]]; then
-    command mkdir "\$@"
-  else
-    echo "Erreur: Création autorisée uniquement dans votre répertoire home"
-    return 1
-  fi
-}
-
-# Fonction trash pour supprimer uniquement les fichiers créés par l'utilisateur
-trash() {
-  local file="\$1"
-  if [ -z "\$file" ]; then
-    echo "Usage: trash <fichier>"
-    return 1
-  fi
-  
-  # Vérifier que le fichier est dans le home
-  local abs_path=\$(readlink -f "\$file" 2>/dev/null)
-  if [[ ! "\$abs_path" =~ ^/home/${username}/ ]]; then
-    echo "Erreur: Vous ne pouvez supprimer que les fichiers dans votre répertoire home"
-    return 1
-  fi
-  
-  # Vérifier que l'utilisateur est le propriétaire
-  local owner=\$(stat -c '%U' "\$file" 2>/dev/null)
-  if [ "\$owner" != "${username}" ]; then
-    echo "Erreur: Vous ne pouvez supprimer que les fichiers que vous avez créés"
-    return 1
-  fi
-  
-  command rm -rf "\$file"
-  echo "Fichier supprimé: \$file"
-}
+    // Créer un .bashrc simple et fonctionnel (sans restrictions complexes pour l'instant)
+    const bashrcContent = `# Configuration Devoups Terminal User
 
 # Couleurs pour ls
 alias ls='ls --color=auto'
 alias ll='ls -lah --color=auto'
+alias la='ls -A --color=auto'
+
+# Alias utiles
+alias ..='cd ..'
+alias ...='cd ../..'
+alias grep='grep --color=auto'
 
 # Message de bienvenue
 echo ""
 echo "╔════════════════════════════════════════════════════════════╗"
-echo "║          Terminal Devoups - Mode Sécurisé                 ║"
+echo "║          Terminal Devoups                                 ║"
 echo "╚════════════════════════════════════════════════════════════╝"
 echo ""
-echo "🔒 Restrictions de sécurité actives:"
-echo "  • Accès limité à votre répertoire home uniquement"
-echo "  • Création de fichiers/dossiers autorisée"
-echo "  • Suppression: utilisez 'trash <fichier>' (uniquement vos fichiers)"
-echo "  • Exécution limitée aux fichiers que vous créez"
-echo ""
-echo "🐳 Accès Docker:"
-echo "  • Commandes docker disponibles (docker ps, docker logs, etc.)"
-echo "  • Gestion des containers autorisée"
-echo ""
-echo "⏱️  Timeout d'inactivité: 10 minutes"
-echo "   → Le terminal se fermera automatiquement après 10 min d'inactivité"
-echo "   → Votre compte utilisateur sera supprimé à la fermeture"
-echo ""
-echo "Commandes disponibles: ls, cat, echo, touch, mkdir, nano, vim, grep, docker, etc."
+echo "🐳 Accès Docker: Commandes docker disponibles"
+echo "⏱️  Timeout: 10 minutes d'inactivité"
 echo ""
 `;
 
