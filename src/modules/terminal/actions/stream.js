@@ -12,10 +12,15 @@ import { executeCommand } from "../../../shared/executor.js";
 
 /**
  * Crée un utilisateur limité pour le terminal si nécessaire
+ * Limites appliquées :
+ * - Accès uniquement au répertoire home
+ * - 5GB d'espace disque maximum
+ * - 2 CPU maximum
+ * - 8GB RAM maximum
  * @returns {Promise<string>} Nom d'utilisateur à utiliser
  */
 async function ensureLimitedUser() {
-  const username = "devoups-terminal";
+  const username = "devoups-temp-user";
   
   try {
     // Vérifier si l'utilisateur existe déjà
@@ -27,10 +32,9 @@ async function ensureLimitedUser() {
     if (checkUser.stdout.trim() === "not_found") {
       logger.info("Création de l'utilisateur limité pour le terminal");
 
-      // Créer l'utilisateur avec un shell limité
-      // Utiliser /bin/bash mais avec des restrictions via rbash ou un shell personnalisé
+      // Créer l'utilisateur avec un shell bash
       await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- useradd -m -s /bin/bash -c "Devoups Terminal User" ${username} 2>&1 || true`,
+        `nsenter -t 1 -m -u -i -n -p -- useradd -m -s /bin/bash -c "Devoups Temp User" ${username} 2>&1 || true`,
         { timeout: 10000 },
       );
 
@@ -40,35 +44,178 @@ async function ensureLimitedUser() {
         { timeout: 5000 },
       );
 
-      logger.info(`Utilisateur ${username} créé avec succès`);
-    } else {
-      logger.debug(`Utilisateur ${username} existe déjà`);
-    }
+      // Configurer les limites de ressources via /etc/security/limits.conf
+      try {
+        // Limites de ressources (5GB disque, 2 CPU, 8GB RAM)
+        // as = address space (RAM) en KB, donc 8GB = 8388608 KB
+        // nproc = nombre de processus (CPU), donc 2
+        // fsize = taille max de fichier en KB, donc 5GB = 5242880 KB
+        const limitsConf = `\n# Limites pour ${username}
+${username} hard as 8388608
+${username} soft as 8388608
+${username} hard nproc 2
+${username} soft nproc 2
+${username} hard fsize 5242880
+${username} soft fsize 5242880
+${username} hard nofile 1024
+${username} soft nofile 1024
+`;
 
-    // Vérifier si l'utilisateur est dans le groupe docker et l'ajouter si nécessaire
-    try {
-      const checkDockerGroup = await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- groups ${username} 2>/dev/null | grep -q docker && echo "in_docker" || echo "not_in_docker"`,
+        await executeCommand(
+          `nsenter -t 1 -m -u -i -n -p -- sh -c 'echo "${limitsConf}" >> /etc/security/limits.conf' 2>&1 || true`,
+          { timeout: 5000 },
+        );
+
+        // Configurer les quotas de disque (5GB) si les quotas sont activés
+        try {
+          // Vérifier si les quotas sont activés
+          const quotaCheck = await executeCommand(
+            `nsenter -t 1 -m -u -i -n -p -- quotaon -a 2>&1 || echo "quota_not_enabled"`,
+            { timeout: 3000 },
+          );
+
+          if (!quotaCheck.stdout.includes("quota_not_enabled")) {
+            // Définir le quota utilisateur à 5GB (en blocs de 1KB)
+            // 5GB = 5242880 KB
+            await executeCommand(
+              `nsenter -t 1 -m -u -i -n -p -- setquota -u ${username} 5242880 5242880 0 0 / 2>&1 || true`,
+              { timeout: 5000 },
+            );
+            logger.info(`Quota de disque configuré pour ${username} (5GB)`);
+          }
+        } catch (quotaError) {
+          logger.debug(
+            "Les quotas de disque ne sont pas disponibles, utilisation des limites de fichiers uniquement",
+            {
+              error: quotaError.message,
+            },
+          );
+        }
+
+        logger.info(`Limites de ressources configurées pour ${username}`);
+      } catch (error) {
+        logger.warn(
+          "Erreur lors de la configuration des limites de ressources",
+          {
+            error: error.message,
+          },
+        );
+      }
+
+      // Créer un .bashrc personnalisé pour limiter l'accès au home uniquement
+      const bashrcContent = [
+        "# Configuration Devoups Temp User",
+        "# Accès limité au répertoire home uniquement",
+        "",
+        "# Empêcher la navigation en dehors du home",
+        "cd() {",
+        '  local target="${1:-~}"',
+        "  local resolved_path",
+        "  ",
+        "  # Résoudre le chemin absolu",
+        '  if [[ "$target" =~ ^/ ]]; then',
+        '    resolved_path="$target"',
+        "  else",
+        '    resolved_path="$(pwd)/$target"',
+        "  fi",
+        '  resolved_path="$(readlink -f "$resolved_path" 2>/dev/null || echo "$resolved_path")"',
+        "  ",
+        `  # Vérifier que le chemin est dans le home de l'utilisateur`,
+        `  if [[ ! "$resolved_path" =~ ^/home/${username}(/|$) ]]; then`,
+        '    echo "Accès refusé: vous ne pouvez accéder qu à votre répertoire home (/home/' +
+          username +
+          ')"',
+        "    return 1",
+        "  fi",
+        "  ",
+        '  builtin cd "$target"',
+        "}",
+        "",
+        "# Limiter PATH",
+        'export PATH="$HOME/bin:$HOME/.local/bin:/usr/bin:/bin"',
+        'export HOME="$HOME"',
+        "",
+        "# Afficher le MOTD au démarrage",
+        'if [ -f "$HOME/.motd" ] && [ -z "$MOTD_SHOWN" ]; then',
+        '  cat "$HOME/.motd"',
+        "  export MOTD_SHOWN=1",
+        "fi",
+        "",
+        "# Alias pour empêcher certaines commandes dangereuses",
+        'alias rm="rm -i"',
+        'alias mv="mv -i"',
+        'alias cp="cp -i"',
+        'alias chmod="echo Commande désactivée"',
+        'alias chown="echo Commande désactivée"',
+        'alias sudo="echo Commande sudo désactivée"',
+        'alias su="echo Commande su désactivée"',
+        "",
+        "# Forcer le répertoire home au démarrage",
+        "cd ~",
+      ].join("\n");
+
+      // Créer le fichier .bashrc en utilisant printf pour gérer les caractères spéciaux
+      await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- sh -c 'cat > /home/${username}/.bashrc << 'BASHRC_EOF'
+${bashrcContent}
+BASHRC_EOF'`,
         { timeout: 5000 },
       );
 
-      if (checkDockerGroup.stdout.trim() === "not_in_docker") {
-        logger.info(`Ajout de l'utilisateur ${username} au groupe docker`);
-        await executeCommand(
-          `nsenter -t 1 -m -u -i -n -p -- usermod -aG docker ${username} 2>&1 || true`,
-          { timeout: 5000 },
-        );
-        logger.info(`Utilisateur ${username} ajouté au groupe docker`);
-      } else {
-        logger.debug(`Utilisateur ${username} est déjà dans le groupe docker`);
-      }
-    } catch (error) {
-      logger.warn(
-        "Erreur lors de l'ajout au groupe docker (le groupe docker peut ne pas exister)",
-        {
-          error: error.message,
-        },
+      // Créer le fichier MOTD
+      const motdContent = [
+        "",
+        "╔══════════════════════════════════════════════════════════════╗",
+        "║          Bienvenue sur le terminal Devoups                  ║",
+        "╚══════════════════════════════════════════════════════════════╝",
+        "",
+        `👤 Utilisateur: ${username}`,
+        "📁 Accès: Répertoire home uniquement (~)",
+        "💾 Espace disque: 5 GB maximum",
+        "⚡ CPU: 2 cœurs maximum",
+        "🧠 RAM: 8 GB maximum",
+        "",
+        "📋 Commandes disponibles:",
+        "   - Navigation dans votre répertoire home",
+        "   - Commandes système de base (ls, cat, grep, etc.)",
+        "   - Édition de fichiers dans votre home",
+        "",
+        "🚫 Restrictions:",
+        "   - Accès uniquement à votre répertoire home",
+        "   - Pas d accès root ou sudo",
+        "   - Pas d accès aux répertoires système",
+        "",
+        "Pour plus d informations, contactez l administrateur système.",
+        "",
+        "═══════════════════════════════════════════════════════════════",
+        "",
+      ].join("\n");
+
+      // Créer le fichier MOTD
+      await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- sh -c 'cat > /home/${username}/.motd << 'MOTD_EOF'
+${motdContent}
+MOTD_EOF'`,
+        { timeout: 5000 },
       );
+
+      // Définir les permissions appropriées
+      await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- chown ${username}:${username} /home/${username}/.bashrc /home/${username}/.motd 2>&1 || true`,
+        { timeout: 5000 },
+      );
+
+      // Changer le répertoire home en répertoire par défaut au login
+      await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- sh -c 'echo "cd ~" >> /home/${username}/.bash_profile' 2>&1 || true`,
+        { timeout: 5000 },
+      );
+
+      logger.info(
+        `Utilisateur ${username} créé avec succès et restrictions appliquées`,
+      );
+    } else {
+      logger.debug(`Utilisateur ${username} existe déjà`);
     }
 
     return username;
@@ -101,7 +248,7 @@ export async function streamTerminal(params = {}, callbacks = {}) {
       userId,
       companyId,
       ["ADMIN", "OWNER", "EDITOR"],
-      "utiliser le terminal"
+      "utiliser le terminal",
     );
 
     const validatedParams = validateTerminalParams("stream", params);
@@ -109,7 +256,7 @@ export async function streamTerminal(params = {}, callbacks = {}) {
 
     if (!callbacks.onStream) {
       throw new Error(
-        "onStream callback est requis pour le streaming du terminal"
+        "onStream callback est requis pour le streaming du terminal",
       );
     }
 
@@ -127,7 +274,8 @@ export async function streamTerminal(params = {}, callbacks = {}) {
     // script -q -c "bash" crée un shell interactif avec PTY
     // -q = quiet (pas de message de démarrage)
     // -c = commande à exécuter
-    const shellCommand = `nsenter -t 1 -m -u -i -n -p -- su - ${username} -c "script -q -c 'bash --login' /dev/null"`;
+    // Changer vers le home et afficher le MOTD au démarrage
+    const shellCommand = `nsenter -t 1 -m -u -i -n -p -- su - ${username} -c "cd ~ && script -q -c 'bash --login' /dev/null"`;
 
     const shellProcess = spawn("sh", ["-c", shellCommand], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -184,7 +332,10 @@ export async function streamTerminal(params = {}, callbacks = {}) {
     shellProcess.on("exit", (code, signal) => {
       logger.info("Terminal fermé", { code, signal, userId });
       try {
-        callbacks.onStream("stdout", `\r\n[Terminal fermé avec le code ${code}]\r\n`);
+        callbacks.onStream(
+          "stdout",
+          `\r\n[Terminal fermé avec le code ${code}]\r\n`,
+        );
       } catch (error) {
         logger.debug("Erreur lors de l'envoi du message de fermeture", {
           error: error.message,
@@ -200,7 +351,10 @@ export async function streamTerminal(params = {}, callbacks = {}) {
         userId,
       });
       try {
-        callbacks.onStream("stderr", `\r\n\x1b[31m[Erreur: ${error.message}]\x1b[0m\r\n`);
+        callbacks.onStream(
+          "stderr",
+          `\r\n\x1b[31m[Erreur: ${error.message}]\x1b[0m\r\n`,
+        );
       } catch (streamError) {
         logger.error("Erreur lors de l'envoi de l'erreur", {
           error: streamError.message,
@@ -231,10 +385,12 @@ export async function streamTerminal(params = {}, callbacks = {}) {
           if (shellProcess.stdin && !shellProcess.stdin.destroyed) {
             shellProcess.stdin.write(resizeCommand);
           }
-          
+
           // Mettre à jour les variables d'environnement (pour les processus enfants)
           if (shellProcess.stdin && !shellProcess.stdin.destroyed) {
-            shellProcess.stdin.write(`export COLUMNS=${newCols} LINES=${newRows}\n`);
+            shellProcess.stdin.write(
+              `export COLUMNS=${newCols} LINES=${newRows}\n`,
+            );
           }
         } catch (error) {
           logger.debug("Erreur lors du redimensionnement du terminal", {
@@ -245,7 +401,10 @@ export async function streamTerminal(params = {}, callbacks = {}) {
     };
 
     // Envoyer un message initial
-    callbacks.onStream("stdout", `\r\n\x1b[32m[Terminal connecté - Utilisateur: ${username}]\x1b[0m\r\n`);
+    callbacks.onStream(
+      "stdout",
+      `\r\n\x1b[32m[Terminal connecté - Utilisateur: ${username}]\x1b[0m\r\n`,
+    );
 
     // Retourner les informations de stream avec les fonctions de contrôle
     return {
