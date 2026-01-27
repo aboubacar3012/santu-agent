@@ -59,18 +59,23 @@ function getPythonScript() {
  */
 export async function toggleLogsBackup(params = {}, callbacks = {}) {
   try {
+    logger.info("toggleLogsBackup: Début de l'exécution", { params });
+    
     // Vérifier les permissions
     const userId = callbacks?.context?.userId;
     const companyId = callbacks?.context?.companyId;
 
+    logger.info("toggleLogsBackup: Vérification des permissions", { userId, companyId });
     await requireRole(
       userId,
       companyId,
       ["ADMIN", "OWNER", "EDITOR"],
       "gérer les backups"
     );
+    logger.info("toggleLogsBackup: Permissions OK");
 
     // Valider les paramètres
+    logger.info("toggleLogsBackup: Validation des paramètres");
     const validatedParams = validateBackupParams("toggle-logs-backup", params);
     const {
       enabled,
@@ -79,6 +84,7 @@ export async function toggleLogsBackup(params = {}, callbacks = {}) {
       awsRegion,
       awsLogsBucket,
     } = validatedParams;
+    logger.info("toggleLogsBackup: Paramètres validés", { enabled });
 
     logger.info(
       enabled ? "Activation du backup des logs" : "Désactivation du backup des logs"
@@ -99,13 +105,16 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       const escapedAwsEnv = escapeShellContent(awsEnvContent);
       const createAwsEnvResult = await executeHostCommand(
         `printf '%s' '${escapedAwsEnv}' > '${awsEnvFile}' && chmod 600 '${awsEnvFile}' && chown root:root '${awsEnvFile}'`,
+        { timeout: 10000 } // 10 secondes suffisent pour créer un fichier
       );
 
       if (createAwsEnvResult.error) {
+        logger.error("Erreur création fichier AWS", { stderr: createAwsEnvResult.stderr });
         throw new Error(
           `Erreur lors de la création du fichier AWS: ${createAwsEnvResult.stderr}`,
         );
       }
+      logger.info("Étape 1 terminée: Fichier AWS créé");
 
       // 2. Vérifier que Python3 est installé
       logger.info("Étape 2: Vérification de Python3");
@@ -114,10 +123,12 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       });
 
       if (pythonCheckResult.error || !pythonCheckResult.stdout.trim()) {
+        logger.error("Python3 non installé");
         throw new Error(
           "Python3 n'est pas installé. Veuillez installer Python3 d'abord.",
         );
       }
+      logger.info("Étape 2 terminée: Python3 disponible", { path: pythonCheckResult.stdout.trim() });
 
       // 3. Vérifier que boto3 et pytz sont installés
       logger.info("Étape 3: Vérification des dépendances Python");
@@ -129,6 +140,10 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         "python3 -c 'import pytz' 2>&1",
         { timeout: 5000 },
       );
+      logger.info("Vérification dépendances", { 
+        boto3Error: boto3Check.error, 
+        pytzError: pytzCheck.error 
+      });
 
       if (boto3Check.error || pytzCheck.error) {
         logger.info("Installation des dépendances Python (boto3, pytz)...");
@@ -174,7 +189,7 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
             let installPipCmd = null;
             if (!aptCheck.error) {
               installPipCmd =
-                "apt-get update -y && apt-get install -y python3-pip";
+                "DEBIAN_FRONTEND=noninteractive apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y python3-pip";
             } else if (!dnfCheck.error) {
               installPipCmd = "dnf install -y python3-pip";
             } else if (!yumCheck.error) {
@@ -184,8 +199,8 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
             if (installPipCmd) {
               logger.info(`Installation de python3-pip via: ${installPipCmd}`);
               const installPipResult = await executeHostCommand(
-                `${installPipCmd} 2>&1`,
-                { timeout: 120000 },
+                `DEBIAN_FRONTEND=noninteractive ${installPipCmd} 2>&1`,
+                { timeout: 300000 }, // 5 minutes pour installer pip
               );
 
               if (installPipResult.error) {
@@ -234,9 +249,10 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
 
         let installedViaApt = false;
         if (!aptCheck.error) {
+          logger.info("Installation via apt-get en cours...");
           const installAptResult = await executeHostCommand(
-            "apt-get update -y >/dev/null 2>&1 && apt-get install -y python3-boto3 python3-pytz 2>&1",
-            { timeout: 120000 },
+            "DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get install -y python3-boto3 python3-pytz 2>&1",
+            { timeout: 300000 }, // 5 minutes - apt-get peut être lent
           );
 
           if (!installAptResult.error) {
@@ -322,11 +338,14 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
           "Les dépendances Python (boto3, pytz) sont déjà installées",
         );
       }
+      logger.info("Étape 3 terminée: Dépendances Python OK");
 
       // 4. Déployer le script Python
       logger.info("Étape 4: Déploiement du script Python");
       const scriptPath = "/usr/local/bin/docker_log_collector_service.py";
+      logger.info("Lecture du script Python...");
       const pythonScript = getPythonScript();
+      logger.info("Script Python lu", { size: pythonScript.length });
 
       // Encoder le script en base64 pour éviter les problèmes d'échappement
       const scriptBase64 = Buffer.from(pythonScript, "utf-8").toString(
@@ -337,13 +356,16 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       // Utiliser base64 -d (GNU) ou base64 --decode (BSD), avec fallback
       const deployScriptResult = await executeHostCommand(
         `echo '${escapedBase64}' | (base64 -d 2>/dev/null || base64 --decode 2>/dev/null) > '${scriptPath}' && chmod 755 '${scriptPath}' && chown root:root '${scriptPath}'`,
+        { timeout: 15000 } // 15 secondes pour déployer le script
       );
 
       if (deployScriptResult.error) {
+        logger.error("Erreur déploiement script", { stderr: deployScriptResult.stderr });
         throw new Error(
           `Erreur lors du déploiement du script: ${deployScriptResult.stderr}`,
         );
       }
+      logger.info("Étape 4 terminée: Script Python déployé");
 
       // 5. Créer la tâche cron (toutes les 2 minutes) via le module cron
       logger.info("Étape 5: Création de la tâche cron");
@@ -352,6 +374,7 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       // Le script Python lit directement le fichier AWS via source et récupère automatiquement le hostname
       // Utiliser bash -c pour que source fonctionne (cron utilise /bin/sh par défaut)
       const cronCommand = `bash -c "source ${awsEnvFile} && python3 ${scriptPath}" >> /var/log/docker-log-collector.log 2>&1`;
+      logger.info("Création de la tâche cron...", { cronName, cronCommand });
 
       // Utiliser le module cron pour créer la tâche
       const cronResult = await addCronJob(
@@ -371,20 +394,25 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         },
         callbacks,
       );
+      logger.info("Résultat création cron", { success: cronResult.success });
 
       if (!cronResult.success) {
+        logger.error("Erreur création cron", { message: cronResult.message });
         throw new Error(
           `Erreur lors de la création de la tâche cron: ${cronResult.message || "Erreur inconnue"}`,
         );
       }
 
       const cronFile = cronResult.file_path;
+      logger.info("Étape 5 terminée: Tâche cron créée", { cronFile });
 
       // 6. Créer le répertoire de logs
       logger.info("Étape 6: Création du répertoire de logs");
       await executeHostCommand(
         "mkdir -p /tmp/docker-logs && chmod 755 /tmp/docker-logs",
+        { timeout: 10000 } // 10 secondes pour créer un répertoire
       );
+      logger.info("Étape 6 terminée: Répertoire de logs créé");
 
       // 7. Test immédiat
       logger.info("Étape 7: Test immédiat du script");
@@ -403,7 +431,9 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
           stdout: testResult.stdout,
         });
       }
+      logger.info("Étape 7 terminée: Test effectué");
 
+      logger.info("toggleLogsBackup: Activation terminée avec succès");
       return {
         success: true,
         enabled: true,
@@ -449,10 +479,12 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       // 2. Arrêter les processus en cours (optionnel)
       await executeHostCommand(
         "pkill -f docker_log_collector_service.py || true",
+        { timeout: 10000 } // 10 secondes pour arrêter les processus
       );
 
       // Note: On garde le fichier AWS et le script Python pour permettre une réactivation rapide
 
+      logger.info("toggleLogsBackup: Désactivation terminée avec succès");
       return {
         success: true,
         enabled: false,
