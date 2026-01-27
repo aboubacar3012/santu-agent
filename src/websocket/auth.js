@@ -22,7 +22,7 @@ import { logger } from "../shared/logger.js";
  * Cette URL est utilisée pour récupérer le rôle d'un utilisateur
  */
 const API_BASE_URL =
-  process.env.API_BASE_URL || "https://dev.sdevoups.elyamaje.com";
+  process.env.API_BASE_URL || "https://dev.devoups.elyamaje.com";
 
 /**
  * Vérifie un token simple (Base64 JSON) localement sans appel API ni signature.
