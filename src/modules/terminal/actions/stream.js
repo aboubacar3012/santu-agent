@@ -122,8 +122,8 @@ async function ensureLimitedUser(userEmail) {
 
       // S'assurer que le répertoire home existe et a les bonnes permissions
       await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- mkdir -p /home/${username} && chown ${username}:${username} /home/${username} 2>&1`,
-        { timeout: 5000 },
+        `nsenter -t 1 -m -u -i -n -p -- sh -c 'mkdir -p /home/${username} && chown -R ${username}:${username} /home/${username} && chmod 755 /home/${username}' 2>&1`,
+        { timeout: 10000 },
       );
 
       logger.info(`Utilisateur ${username} créé avec succès`);
@@ -141,8 +141,17 @@ async function ensureLimitedUser(userEmail) {
       if (homeCheck.stdout.trim() === "missing") {
         logger.warn(`Répertoire home manquant pour ${username}, création...`);
         await executeCommand(
-          `nsenter -t 1 -m -u -i -n -p -- mkdir -p /home/${username} && chown ${username}:${username} /home/${username} 2>&1`,
-          { timeout: 5000 },
+          `nsenter -t 1 -m -u -i -n -p -- sh -c 'mkdir -p /home/${username} && chown -R ${username}:${username} /home/${username} && chmod 755 /home/${username}' 2>&1`,
+          { timeout: 10000 },
+        );
+      } else {
+        // S'assurer que les permissions sont correctes même si le répertoire existe
+        logger.info(
+          `Vérification et correction des permissions pour ${username}`,
+        );
+        await executeCommand(
+          `nsenter -t 1 -m -u -i -n -p -- sh -c 'chown -R ${username}:${username} /home/${username} && chmod 755 /home/${username}' 2>&1 || true`,
+          { timeout: 10000 },
         );
       }
     }
@@ -288,12 +297,6 @@ BASHRC_EOF'`,
       { timeout: 5000 },
     );
 
-    // Définir les permissions appropriées pour .bashrc
-    await executeCommand(
-      `nsenter -t 1 -m -u -i -n -p -- chown ${username}:${username} /home/${username}/.bashrc && chmod 644 /home/${username}/.bashrc 2>&1 || true`,
-      { timeout: 5000 },
-    );
-
     // Créer un fichier .bash_profile pour forcer le chargement de .bashrc
     await executeCommand(
       `nsenter -t 1 -m -u -i -n -p -- sh -c 'cat > /home/${username}/.bash_profile << 'PROFILE_EOF'
@@ -305,23 +308,25 @@ PROFILE_EOF'`,
       { timeout: 5000 },
     );
 
-    await executeCommand(
-      `nsenter -t 1 -m -u -i -n -p -- chown ${username}:${username} /home/${username}/.bash_profile && chmod 644 /home/${username}/.bash_profile 2>&1 || true`,
-      { timeout: 5000 },
-    );
-
-    // Configurer les permissions du répertoire home pour empêcher l'accès aux fichiers système
-    // Rendre le home accessible uniquement par l'utilisateur
-    await executeCommand(
-      `nsenter -t 1 -m -u -i -n -p -- chmod 750 /home/${username} 2>&1 || true`,
-      { timeout: 5000 },
-    );
-
     // Créer un répertoire .local pour les fichiers temporaires
     await executeCommand(
-      `nsenter -t 1 -m -u -i -n -p -- mkdir -p /home/${username}/.local && chown ${username}:${username} /home/${username}/.local 2>&1 || true`,
+      `nsenter -t 1 -m -u -i -n -p -- mkdir -p /home/${username}/.local 2>&1 || true`,
       { timeout: 5000 },
     );
+
+    // Configurer TOUTES les permissions en une seule commande pour éviter les problèmes
+    await executeCommand(
+      `nsenter -t 1 -m -u -i -n -p -- sh -c '
+        chown -R ${username}:${username} /home/${username} &&
+        chmod 755 /home/${username} &&
+        chmod 644 /home/${username}/.bashrc &&
+        chmod 644 /home/${username}/.bash_profile &&
+        chmod 755 /home/${username}/.local
+      ' 2>&1 || true`,
+      { timeout: 10000 },
+    );
+
+    logger.info(`Permissions configurées pour ${username}`);
 
     // Ajouter l'utilisateur au groupe docker
     try {
