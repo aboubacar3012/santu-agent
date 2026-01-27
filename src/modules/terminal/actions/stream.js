@@ -27,22 +27,68 @@ async function ensureLimitedUser() {
     if (checkUser.stdout.trim() === "not_found") {
       logger.info("Création de l'utilisateur limité pour le terminal");
 
-      // Créer l'utilisateur avec un shell limité
-      // Utiliser /bin/bash mais avec des restrictions via rbash ou un shell personnalisé
-      await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- useradd -m -s /bin/bash -c "Devoups Terminal User" ${username} 2>&1 || true`,
+      // Créer l'utilisateur avec un shell bash et un répertoire home
+      const createUserResult = await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- useradd -m -s /bin/bash -c "Devoups Terminal User" ${username} 2>&1`,
         { timeout: 10000 },
       );
 
-      // Créer un répertoire home avec permissions appropriées
+      // Logger le résultat de la création
+      logger.debug(`Résultat création utilisateur ${username}:`, {
+        stdout: createUserResult.stdout,
+        stderr: createUserResult.stderr,
+        exitCode: createUserResult.exitCode,
+      });
+
+      // Vérifier si la création a réussi
+      if (createUserResult.exitCode !== 0 && !createUserResult.stderr.includes("already exists")) {
+        logger.error(`Erreur lors de la création de l'utilisateur: ${createUserResult.stderr || createUserResult.stdout}`);
+      }
+
+      // Vérifier que l'utilisateur existe maintenant
+      const verifyUser = await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- id -u ${username} 2>/dev/null || echo "not_found"`,
+        { timeout: 5000 },
+      );
+
+      if (verifyUser.stdout.trim() === "not_found") {
+        throw new Error(`Impossible de créer l'utilisateur ${username}`);
+      }
+
+      // S'assurer que le répertoire home existe et a les bonnes permissions
       await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- mkdir -p /home/${username} && chown ${username}:${username} /home/${username} 2>&1 || true`,
+        `nsenter -t 1 -m -u -i -n -p -- mkdir -p /home/${username} && chown ${username}:${username} /home/${username} 2>&1`,
         { timeout: 5000 },
       );
 
       logger.info(`Utilisateur ${username} créé avec succès`);
     } else {
       logger.debug(`Utilisateur ${username} existe déjà`);
+      
+      // Vérifier que le répertoire home existe
+      const homeCheck = await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- test -d /home/${username} && echo "exists" || echo "missing"`,
+        { timeout: 3000 },
+      );
+      
+      if (homeCheck.stdout.trim() === "missing") {
+        logger.warn(`Répertoire home manquant pour ${username}, création...`);
+        await executeCommand(
+          `nsenter -t 1 -m -u -i -n -p -- mkdir -p /home/${username} && chown ${username}:${username} /home/${username} 2>&1`,
+          { timeout: 5000 },
+        );
+      }
+    }
+
+    // Vérifier une dernière fois que le répertoire home existe avant de créer les fichiers
+    const finalHomeCheck = await executeCommand(
+      `nsenter -t 1 -m -u -i -n -p -- test -d /home/${username} && echo "exists" || echo "missing"`,
+      { timeout: 3000 },
+    );
+    
+    if (finalHomeCheck.stdout.trim() === "missing") {
+      logger.error(`Répertoire home /home/${username} n'existe pas, impossible de continuer`);
+      throw new Error(`Répertoire home manquant pour ${username}`);
     }
 
     // Créer le script MOTD avec un design cool inspiré de l'image
@@ -178,13 +224,24 @@ BASHRC_EOF'`,
       );
     }
 
+    // Vérification finale que l'utilisateur existe avant de retourner
+    const finalCheck = await executeCommand(
+      `nsenter -t 1 -m -u -i -n -p -- id -u ${username} 2>/dev/null || echo "not_found"`,
+      { timeout: 5000 },
+    );
+
+    if (finalCheck.stdout.trim() === "not_found") {
+      throw new Error(`L'utilisateur ${username} n'existe pas après la création`);
+    }
+
     return username;
   } catch (error) {
-    logger.warn("Erreur lors de la création de l'utilisateur limité, utilisation de l'utilisateur par défaut", {
+    logger.error("Erreur lors de la création de l'utilisateur limité", {
       error: error.message,
+      stack: error.stack,
     });
-    // Fallback: utiliser l'utilisateur courant ou un utilisateur système
-    return "nobody";
+    // Propager l'erreur au lieu de retourner "nobody" qui n'a pas de home
+    throw error;
   }
 }
 
