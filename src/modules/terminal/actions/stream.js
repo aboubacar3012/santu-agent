@@ -132,15 +132,6 @@ export async function streamTerminal(params = {}, callbacks = {}) {
       }
     };
 
-    // Enregistrer la ressource pour le nettoyage automatique
-    if (callbacks.onResource) {
-      callbacks.onResource({
-        type: "terminal",
-        process: shellProcess,
-        cleanup,
-      });
-    }
-
     // Gérer stdout (sortie du terminal)
     shellProcess.stdout.on("data", (chunk) => {
       try {
