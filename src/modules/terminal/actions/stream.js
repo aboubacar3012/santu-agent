@@ -21,28 +21,54 @@ async function ensureLimitedUser() {
     // Vérifier si l'utilisateur existe déjà
     const checkUser = await executeCommand(
       `nsenter -t 1 -m -u -i -n -p -- id -u ${username} 2>/dev/null || echo "not_found"`,
-      { timeout: 5000 }
+      { timeout: 5000 },
     );
 
     if (checkUser.stdout.trim() === "not_found") {
       logger.info("Création de l'utilisateur limité pour le terminal");
-      
+
       // Créer l'utilisateur avec un shell limité
       // Utiliser /bin/bash mais avec des restrictions via rbash ou un shell personnalisé
       await executeCommand(
         `nsenter -t 1 -m -u -i -n -p -- useradd -m -s /bin/bash -c "Devoups Terminal User" ${username} 2>&1 || true`,
-        { timeout: 10000 }
+        { timeout: 10000 },
       );
 
       // Créer un répertoire home avec permissions appropriées
       await executeCommand(
         `nsenter -t 1 -m -u -i -n -p -- mkdir -p /home/${username} && chown ${username}:${username} /home/${username} 2>&1 || true`,
-        { timeout: 5000 }
+        { timeout: 5000 },
       );
 
       logger.info(`Utilisateur ${username} créé avec succès`);
     } else {
       logger.debug(`Utilisateur ${username} existe déjà`);
+    }
+
+    // Vérifier si l'utilisateur est dans le groupe docker et l'ajouter si nécessaire
+    try {
+      const checkDockerGroup = await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- groups ${username} 2>/dev/null | grep -q docker && echo "in_docker" || echo "not_in_docker"`,
+        { timeout: 5000 },
+      );
+
+      if (checkDockerGroup.stdout.trim() === "not_in_docker") {
+        logger.info(`Ajout de l'utilisateur ${username} au groupe docker`);
+        await executeCommand(
+          `nsenter -t 1 -m -u -i -n -p -- usermod -aG docker ${username} 2>&1 || true`,
+          { timeout: 5000 },
+        );
+        logger.info(`Utilisateur ${username} ajouté au groupe docker`);
+      } else {
+        logger.debug(`Utilisateur ${username} est déjà dans le groupe docker`);
+      }
+    } catch (error) {
+      logger.warn(
+        "Erreur lors de l'ajout au groupe docker (le groupe docker peut ne pas exister)",
+        {
+          error: error.message,
+        },
+      );
     }
 
     return username;
