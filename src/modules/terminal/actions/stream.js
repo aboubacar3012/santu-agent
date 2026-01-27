@@ -92,6 +92,7 @@ async function ensureLimitedUser() {
     }
 
     // Créer le script MOTD avec un design cool inspiré de l'image
+    // IMPORTANT: Échapper toutes les variables bash avec \${VAR} pour éviter l'interpolation JavaScript
     const motdScript = `#!/bin/bash
 # MOTD dynamique pour Devoups Terminal
 set +e  # Ne pas s'arrêter en cas d'erreur
@@ -116,52 +117,52 @@ echo -e "\\x1b[1;33m┌─ System Information ───────────�
 # Date - avec valeur par défaut
 DATE_INFO="N/A"
 if command -v date >/dev/null 2>&1; then
-  DATE_INFO=$(date '+%A, %d %B %Y, %I:%M:%S %p' 2>/dev/null || date 2>/dev/null || echo "N/A")
+  DATE_INFO=\$(date '+%A, %d %B %Y, %I:%M:%S %p' 2>/dev/null || date 2>/dev/null || echo "N/A")
 fi
-echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mDate.............:\\x1b[0m \\x1b[32m${DATE_INFO}\\x1b[0m"
+echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mDate.............:\\x1b[0m \\x1b[32m\${DATE_INFO}\\x1b[0m"
 
 # Uptime - avec valeur par défaut
 UPTIME_INFO="N/A"
 if command -v uptime >/dev/null 2>&1; then
-  UPTIME_INFO=$(uptime -p 2>/dev/null || uptime 2>/dev/null | awk '{print $3,$4}' | sed 's/,//' || echo "N/A")
+  UPTIME_INFO=\$(uptime -p 2>/dev/null || uptime 2>/dev/null | awk '{print \$3,\$4}' | sed 's/,//' || echo "N/A")
 fi
-echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mUptime..........:\\x1b[0m \\x1b[32m${UPTIME_INFO}\\x1b[0m"
+echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mUptime..........:\\x1b[0m \\x1b[32m\${UPTIME_INFO}\\x1b[0m"
 
 # Disk Space - avec valeurs par défaut
 DISK_USED="N/A"
 DISK_FREE="N/A"
 if command -v df >/dev/null 2>&1; then
-  DISK_USED=$(df -h / 2>/dev/null | awk 'NR==2 {print $3}' || echo "N/A")
-  DISK_FREE=$(df -h / 2>/dev/null | awk 'NR==2 {print $4}' || echo "N/A")
+  DISK_USED=\$(df -h / 2>/dev/null | awk 'NR==2 {print \$3}' || echo "N/A")
+  DISK_FREE=\$(df -h / 2>/dev/null | awk 'NR==2 {print \$4}' || echo "N/A")
 fi
-echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mDisk Space......:\\x1b[0m \\x1b[32mUsed: ${DISK_USED}, Free: ${DISK_FREE}\\x1b[0m"
+echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mDisk Space......:\\x1b[0m \\x1b[32mUsed: \${DISK_USED}, Free: \${DISK_FREE}\\x1b[0m"
 
 # Memory - avec valeurs par défaut
 MEM_USED="N/A"
 MEM_FREE="N/A"
 if command -v free >/dev/null 2>&1; then
-  MEM_USED=$(free -h 2>/dev/null | awk '/^Mem:/ {print $3}' || echo "N/A")
-  MEM_FREE=$(free -h 2>/dev/null | awk '/^Mem:/ {print $4}' || echo "N/A")
+  MEM_USED=\$(free -h 2>/dev/null | awk '/^Mem:/ {print \$3}' || echo "N/A")
+  MEM_FREE=\$(free -h 2>/dev/null | awk '/^Mem:/ {print \$4}' || echo "N/A")
 fi
-echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mMemory..........:\\x1b[0m \\x1b[32mUsed: ${MEM_USED}, Free: ${MEM_FREE}\\x1b[0m"
+echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mMemory..........:\\x1b[0m \\x1b[32mUsed: \${MEM_USED}, Free: \${MEM_FREE}\\x1b[0m"
 
 # Load Averages - avec valeur par défaut
 LOAD_AVG="N/A"
 if command -v uptime >/dev/null 2>&1; then
-  LOAD_AVG=$(uptime 2>/dev/null | awk -F'load average:' '{print $2}' | sed 's/^ *//' || echo "N/A")
+  LOAD_AVG=\$(uptime 2>/dev/null | awk -F'load average:' '{print \$2}' | sed 's/^ *//' || echo "N/A")
 fi
-echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mLoad Averages...:\\x1b[0m \\x1b[32m${LOAD_AVG}\\x1b[0m"
+echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mLoad Averages...:\\x1b[0m \\x1b[32m\${LOAD_AVG}\\x1b[0m"
 
 # Running Processes - avec valeur par défaut
 PROC_COUNT="N/A"
 if command -v ps >/dev/null 2>&1; then
-  PROC_COUNT=$(ps aux 2>/dev/null | wc -l | awk '{print $1-1}' || echo "N/A")
+  PROC_COUNT=\$(ps aux 2>/dev/null | wc -l | awk '{print \$1-1}' || echo "N/A")
 fi
-echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mRunning Processes:\\x1b[0m \\x1b[32m${PROC_COUNT}\\x1b[0m"
+echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mRunning Processes:\\x1b[0m \\x1b[32m\${PROC_COUNT}\\x1b[0m"
 
 # User
 USERNAME="${username}"
-echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mUser.............:\\x1b[0m \\x1b[32m${USERNAME}\\x1b[0m"
+echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mUser.............:\\x1b[0m \\x1b[32m\${USERNAME}\\x1b[0m"
 
 echo -e "\\x1b[1;33m└────────────────────────────────────────────────────────────────┘\\x1b[0m"
 echo ""
