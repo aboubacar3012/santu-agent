@@ -128,19 +128,33 @@ async function ensureLimitedUser(userEmail) {
 
       logger.info(`Utilisateur ${username} créé avec succès`);
     } else {
-      logger.debug(`Utilisateur ${username} existe déjà`);
+      logger.debug(`Utilisateur ${username} existe déjà - Recréation pour mettre à jour la configuration`);
 
-      // Vérifier que le répertoire home existe
-      const homeCheck = await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- test -d /home/${username} && echo "exists" || echo "missing"`,
-        { timeout: 3000 },
+      // Supprimer l'utilisateur existant pour le recréer avec la nouvelle config
+      await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- pkill -u ${username} -9 || true`,
+        { timeout: 5000 },
+      );
+      
+      await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- userdel -r ${username} 2>&1 || true`,
+        { timeout: 10000 },
       );
 
-      if (homeCheck.stdout.trim() === "missing") {
-        logger.warn(`Répertoire home manquant pour ${username}, création...`);
-        await executeCommand(
-          `nsenter -t 1 -m -u -i -n -p -- mkdir -p /home/${username} && chown ${username}:${username} /home/${username} 2>&1`,
-          { timeout: 5000 },
+      logger.info("Création du nouvel utilisateur avec configuration mise à jour");
+      
+      // Créer l'utilisateur avec un shell bash et un répertoire home
+      const createUserResult = await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- useradd -m -s /bin/bash -c "Devoups Terminal User" ${username} 2>&1`,
+        { timeout: 10000 },
+      );
+
+      if (
+        createUserResult.exitCode !== 0 &&
+        !createUserResult.stderr.includes("already exists")
+      ) {
+        logger.error(
+          `Erreur lors de la création de l'utilisateur: ${createUserResult.stderr || createUserResult.stdout}`,
         );
       }
     }
@@ -161,25 +175,42 @@ async function ensureLimitedUser(userEmail) {
     // Créer un .bashrc personnalisé avec restrictions de sécurité
     const bashrcContent = `# Configuration Devoups Terminal User - Mode Restreint
 
-# Forcer le répertoire HOME
-cd ~ 2>/dev/null || cd /home/${username}
-
 # Limiter le PATH aux commandes sûres uniquement
 export PATH="/usr/bin:/bin"
 
 # Empêcher de changer de répertoire en dehors du home
 cd() {
-  local target="\${1:-.}"
-  local abs_path=\$(readlink -f "\$target" 2>/dev/null || echo "\$target")
+  # Si pas d'argument, aller au home (comportement par défaut)
+  if [ -z "\$1" ]; then
+    builtin cd /home/${username}
+    return \$?
+  fi
   
-  # Vérifier si on essaie de sortir du home
-  if [[ "\$abs_path" =~ ^/home/${username} ]] || [ "\$abs_path" = "/home/${username}" ]; then
-    builtin cd "\$@"
+  local target="\$1"
+  
+  # Gérer les chemins relatifs et absolus
+  if [[ "\$target" = /* ]]; then
+    # Chemin absolu
+    local abs_path="\$target"
+  else
+    # Chemin relatif - construire le chemin absolu
+    local current_dir=\$(pwd)
+    # Simplifier le chemin (enlever les ./ et ../)
+    abs_path="\$(cd "\$current_dir" && cd "\$target" 2>/dev/null && pwd || echo "invalid")"
+  fi
+  
+  # Vérifier si le chemin est dans le home
+  if [[ "\$abs_path" = "/home/${username}"* ]]; then
+    builtin cd "\$target"
+    return \$?
   else
     echo "Erreur: Vous ne pouvez naviguer que dans votre répertoire home"
     return 1
   fi
 }
+
+# Forcer le démarrage dans le répertoire HOME
+builtin cd /home/${username} 2>/dev/null
 
 # Désactiver certaines commandes dangereuses
 alias rm='echo "Commande rm désactivée. Utilisez: trash <fichier>"'
