@@ -26,7 +26,47 @@ async function ensureLimitedUser() {
       { timeout: 5000 },
     );
 
-    if (checkUser.stdout.trim() === "not_found") {
+    // Si l'utilisateur existe, le supprimer complètement pour éviter les limites résiduelles
+    if (checkUser.stdout.trim() !== "not_found") {
+      logger.info(`Suppression de l'utilisateur ${username} existant pour le recréer proprement`);
+      
+      try {
+        // Tuer tous les processus de l'utilisateur
+        await executeCommand(
+          `nsenter -t 1 -m -u -i -n -p -- pkill -u ${username} 2>&1 || true`,
+          { timeout: 3000 },
+        );
+        
+        // Attendre un peu pour que les processus se terminent
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Supprimer l'utilisateur et son home
+        await executeCommand(
+          `nsenter -t 1 -m -u -i -n -p -- userdel -r ${username} 2>&1 || true`,
+          { timeout: 5000 },
+        );
+        
+        // Nettoyer les limites dans /etc/security/limits.conf
+        await executeCommand(
+          `nsenter -t 1 -m -u -i -n -p -- sed -i '/${username}/d' /etc/security/limits.conf 2>&1 || true`,
+          { timeout: 3000 },
+        );
+        
+        logger.info(`Utilisateur ${username} supprimé avec succès`);
+      } catch (error) {
+        logger.warn("Erreur lors de la suppression de l'utilisateur existant", {
+          error: error.message,
+        });
+      }
+    }
+
+    // Créer l'utilisateur (soit nouveau, soit après suppression)
+    const userExists = await executeCommand(
+      `nsenter -t 1 -m -u -i -n -p -- id -u ${username} 2>/dev/null || echo "not_found"`,
+      { timeout: 5000 },
+    );
+
+    if (userExists.stdout.trim() === "not_found") {
       logger.info("Création de l'utilisateur limité pour le terminal");
 
       // Créer l'utilisateur avec un shell bash
@@ -101,6 +141,82 @@ MOTD_EOF'`,
       );
     } else {
       logger.debug(`Utilisateur ${username} existe déjà`);
+      
+      // Nettoyer les anciennes limites de ressources si elles existent
+      try {
+        // Supprimer toutes les lignes contenant le nom d'utilisateur dans /etc/security/limits.conf
+        await executeCommand(
+          `nsenter -t 1 -m -u -i -n -p -- sed -i '/${username}/d' /etc/security/limits.conf 2>&1 || true`,
+          { timeout: 5000 },
+        );
+        
+        // Réinitialiser les quotas si configurés
+        try {
+          await executeCommand(
+            `nsenter -t 1 -m -u -i -n -p -- setquota -u ${username} 0 0 0 0 / 2>&1 || true`,
+            { timeout: 3000 },
+          );
+        } catch (quotaError) {
+          // Ignorer si les quotas ne sont pas activés
+        }
+        
+        logger.debug(`Anciennes limites nettoyées pour ${username}`);
+      } catch (error) {
+        logger.debug("Erreur lors du nettoyage des anciennes limites", {
+          error: error.message,
+        });
+      }
+      
+      // Mettre à jour le .bashrc et .motd même si l'utilisateur existe déjà
+      const bashrcContent = [
+        "# Configuration Devoups Temp User",
+        "",
+        "# Afficher le MOTD au démarrage",
+        'if [ -f "$HOME/.motd" ] && [ -z "$MOTD_SHOWN" ]; then',
+        '  cat "$HOME/.motd"',
+        "  export MOTD_SHOWN=1",
+        "fi",
+        "",
+        "# Empêcher l'accès root",
+        'alias sudo="echo Commande sudo désactivée - pas d accès root"',
+        'alias su="echo Commande su désactivée - pas d accès root"',
+      ].join("\n");
+
+      await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- sh -c 'cat > /home/${username}/.bashrc << 'BASHRC_EOF'
+${bashrcContent}
+BASHRC_EOF'`,
+        { timeout: 5000 },
+      );
+
+      const motdContent = [
+        "",
+        "╔══════════════════════════════════════════════════════════════╗",
+        "║          Bienvenue sur le terminal Devoups                  ║",
+        "╚══════════════════════════════════════════════════════════════╝",
+        "",
+        `👤 Utilisateur: ${username}`,
+        "",
+        "🚫 Restrictions:",
+        "   - Pas d accès root (sudo et su désactivés)",
+        "",
+        "Pour plus d informations, contactez l administrateur système.",
+        "",
+        "═══════════════════════════════════════════════════════════════",
+        "",
+      ].join("\n");
+
+      await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- sh -c 'cat > /home/${username}/.motd << 'MOTD_EOF'
+${motdContent}
+MOTD_EOF'`,
+        { timeout: 5000 },
+      );
+
+      await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- chown ${username}:${username} /home/${username}/.bashrc /home/${username}/.motd 2>&1 || true`,
+        { timeout: 5000 },
+      );
     }
 
     return username;
