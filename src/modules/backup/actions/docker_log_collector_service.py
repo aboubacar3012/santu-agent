@@ -461,6 +461,7 @@ def main():
     """Point d'entrée principal"""
     service = DockerLogCollectorService()
     
+    # Mode normal : collecte et upload en continu
     # Intervalles en secondes
     COLLECT_INTERVAL = 2 * 60  # 2 minutes
     UPLOAD_INTERVAL = 1 * 3600  # 1 heure

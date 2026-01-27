@@ -11,6 +11,34 @@ import { requireRole } from "../../../websocket/auth.js";
 import { executeCommand } from "../../../shared/executor.js";
 
 /**
+ * Supprime un utilisateur et son répertoire home
+ * @param {string} username - Nom d'utilisateur à supprimer
+ */
+async function deleteUser(username) {
+  try {
+    logger.info(`Suppression de l'utilisateur inactif: ${username}`);
+
+    // Tuer tous les processus de l'utilisateur
+    await executeCommand(
+      `nsenter -t 1 -m -u -i -n -p -- pkill -u ${username} -9 || true`,
+      { timeout: 5000 },
+    );
+
+    // Supprimer l'utilisateur et son répertoire home
+    await executeCommand(
+      `nsenter -t 1 -m -u -i -n -p -- userdel -r ${username} 2>&1 || true`,
+      { timeout: 10000 },
+    );
+
+    logger.info(`Utilisateur ${username} supprimé avec succès`);
+  } catch (error) {
+    logger.error(`Erreur lors de la suppression de l'utilisateur ${username}`, {
+      error: error.message,
+    });
+  }
+}
+
+/**
  * Crée un utilisateur limité pour le terminal si nécessaire
  * @param {string} userEmail - Email de l'utilisateur connecté
  * @returns {Promise<string>} Nom d'utilisateur à utiliser
@@ -124,12 +152,87 @@ async function ensureLimitedUser(userEmail) {
       throw new Error(`Répertoire home manquant pour ${username}`);
     }
 
-    // Créer un .bashrc personnalisé simple sans MOTD
-    const bashrcContent = `# Configuration Devoups Terminal User
+    // Créer un .bashrc personnalisé avec restrictions de sécurité
+    const bashrcContent = `# Configuration Devoups Terminal User - Mode Restreint
+
+# Forcer le répertoire HOME
+cd ~ 2>/dev/null || cd /home/${username}
+
+# Empêcher de sortir du répertoire home
+set -o restricted
+
+# Limiter le PATH aux commandes sûres uniquement
+export PATH="/usr/bin:/bin"
+
+# Désactiver certaines commandes dangereuses
+alias rm='echo "Commande rm désactivée. Utilisez: trash <fichier>"'
+alias rmdir='echo "Commande rmdir désactivée."'
+alias mv='echo "Commande mv désactivée pour les fichiers système."'
+alias chmod='echo "Commande chmod désactivée pour les fichiers système."'
+alias chown='echo "Commande chown désactivée."'
+alias chgrp='echo "Commande chgrp désactivée."'
+alias sudo='echo "Commande sudo désactivée."'
+alias su='echo "Commande su désactivée."'
+
+# Fonction pour créer des fichiers/dossiers (autorisé uniquement dans home)
+mkdir() {
+  local target="\$1"
+  if [[ "\$target" =~ ^/home/${username}/ ]] || [[ "\$target" != /* ]]; then
+    command mkdir "\$@"
+  else
+    echo "Erreur: Création autorisée uniquement dans votre répertoire home"
+    return 1
+  fi
+}
+
+# Fonction trash pour supprimer uniquement les fichiers créés par l'utilisateur
+trash() {
+  local file="\$1"
+  if [ -z "\$file" ]; then
+    echo "Usage: trash <fichier>"
+    return 1
+  fi
+  
+  # Vérifier que le fichier est dans le home
+  local abs_path=\$(readlink -f "\$file" 2>/dev/null)
+  if [[ ! "\$abs_path" =~ ^/home/${username}/ ]]; then
+    echo "Erreur: Vous ne pouvez supprimer que les fichiers dans votre répertoire home"
+    return 1
+  fi
+  
+  # Vérifier que l'utilisateur est le propriétaire
+  local owner=\$(stat -c '%U' "\$file" 2>/dev/null)
+  if [ "\$owner" != "${username}" ]; then
+    echo "Erreur: Vous ne pouvez supprimer que les fichiers que vous avez créés"
+    return 1
+  fi
+  
+  command rm -rf "\$file"
+  echo "Fichier supprimé: \$file"
+}
 
 # Couleurs pour ls
 alias ls='ls --color=auto'
 alias ll='ls -lah --color=auto'
+
+# Message de bienvenue
+echo ""
+echo "╔════════════════════════════════════════════════════════════╗"
+echo "║          Terminal Devoups - Mode Sécurisé                 ║"
+echo "╚════════════════════════════════════════════════════════════╝"
+echo ""
+echo "🔒 Restrictions de sécurité actives:"
+echo "  • Accès limité à votre répertoire home uniquement"
+echo "  • Création de fichiers/dossiers autorisée"
+echo "  • Suppression: utilisez 'trash <fichier>' (uniquement vos fichiers)"
+echo "  • Exécution limitée aux fichiers que vous créez"
+echo ""
+echo "⏱️  Timeout d'inactivité: 10 minutes"
+echo "   → Le terminal se fermera automatiquement après 10 min d'inactivité"
+echo "   → Votre compte utilisateur sera supprimé à la fermeture"
+echo ""
+echo "Commandes disponibles: ls, cat, echo, touch, mkdir, nano, vim, grep, etc."
+echo ""
 `;
 
     // Créer le fichier .bashrc
@@ -140,37 +243,46 @@ BASHRC_EOF'`,
       { timeout: 5000 },
     );
 
-    // Définir les permissions appropriées
+    // Définir les permissions appropriées pour .bashrc
     await executeCommand(
-      `nsenter -t 1 -m -u -i -n -p -- chown ${username}:${username} /home/${username}/.bashrc 2>&1 || true`,
+      `nsenter -t 1 -m -u -i -n -p -- chown ${username}:${username} /home/${username}/.bashrc && chmod 644 /home/${username}/.bashrc 2>&1 || true`,
       { timeout: 5000 },
     );
 
-    // Vérifier si l'utilisateur est dans le groupe docker et l'ajouter si nécessaire
-    try {
-      const checkDockerGroup = await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- groups ${username} 2>/dev/null | grep -q docker && echo "in_docker" || echo "not_in_docker"`,
-        { timeout: 5000 },
-      );
+    // Créer un fichier .bash_profile pour forcer le chargement de .bashrc
+    await executeCommand(
+      `nsenter -t 1 -m -u -i -n -p -- sh -c 'cat > /home/${username}/.bash_profile << 'PROFILE_EOF'
+# Charger .bashrc
+if [ -f ~/.bashrc ]; then
+    . ~/.bashrc
+fi
+PROFILE_EOF'`,
+      { timeout: 5000 },
+    );
 
-      if (checkDockerGroup.stdout.trim() === "not_in_docker") {
-        logger.info(`Ajout de l'utilisateur ${username} au groupe docker`);
-        await executeCommand(
-          `nsenter -t 1 -m -u -i -n -p -- usermod -aG docker ${username} 2>&1 || true`,
-          { timeout: 5000 },
-        );
-        logger.info(`Utilisateur ${username} ajouté au groupe docker`);
-      } else {
-        logger.debug(`Utilisateur ${username} est déjà dans le groupe docker`);
-      }
-    } catch (error) {
-      logger.warn(
-        "Erreur lors de l'ajout au groupe docker (le groupe docker peut ne pas exister)",
-        {
-          error: error.message,
-        },
-      );
-    }
+    await executeCommand(
+      `nsenter -t 1 -m -u -i -n -p -- chown ${username}:${username} /home/${username}/.bash_profile && chmod 644 /home/${username}/.bash_profile 2>&1 || true`,
+      { timeout: 5000 },
+    );
+
+    // Configurer les permissions du répertoire home pour empêcher l'accès aux fichiers système
+    // Rendre le home accessible uniquement par l'utilisateur
+    await executeCommand(
+      `nsenter -t 1 -m -u -i -n -p -- chmod 750 /home/${username} 2>&1 || true`,
+      { timeout: 5000 },
+    );
+
+    // Créer un répertoire .local pour les fichiers temporaires
+    await executeCommand(
+      `nsenter -t 1 -m -u -i -n -p -- mkdir -p /home/${username}/.local && chown ${username}:${username} /home/${username}/.local 2>&1 || true`,
+      { timeout: 5000 },
+    );
+
+    // NE PAS ajouter l'utilisateur au groupe docker pour des raisons de sécurité
+    // Le groupe docker donne des privilèges équivalents à root
+    logger.info(
+      `Utilisateur ${username} configuré sans accès Docker (sécurité)`,
+    );
 
     // Vérification finale que l'utilisateur existe avant de retourner
     const finalCheck = await executeCommand(
@@ -236,12 +348,14 @@ export async function streamTerminal(params = {}, callbacks = {}) {
     // Créer ou récupérer l'utilisateur limité
     const username = await ensureLimitedUser(userEmail);
 
-    // Créer un processus shell interactif via nsenter
-    // Utiliser script pour créer un PTY interactif avec un shell bash
+    // Créer un processus shell interactif via nsenter avec restrictions
+    // Utiliser script pour créer un PTY interactif avec un shell bash restreint
     // script -q -c "bash" crée un shell interactif avec PTY
     // -q = quiet (pas de message de démarrage)
     // -c = commande à exécuter
-    const shellCommand = `nsenter -t 1 -m -u -i -n -p -- su - ${username} -c "script -q -c 'bash --login' /dev/null"`;
+    // --login = charger .bash_profile et .bashrc
+    // cd ~ = forcer le démarrage dans le répertoire home
+    const shellCommand = `nsenter -t 1 -m -u -i -n -p -- su - ${username} -c "cd /home/${username} && script -q -c 'bash --login' /dev/null"`;
 
     const shellProcess = spawn("sh", ["-c", shellCommand], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -253,8 +367,68 @@ export async function streamTerminal(params = {}, callbacks = {}) {
       },
     });
 
+    // Timer d'inactivité (10 minutes)
+    const INACTIVITY_TIMEOUT = 10 * 60 * 1000; // 10 minutes en millisecondes
+    let inactivityTimer = null;
+
+    // Fonction pour réinitialiser le timer d'inactivité
+    const resetInactivityTimer = () => {
+      // Annuler le timer précédent
+      if (inactivityTimer) {
+        clearTimeout(inactivityTimer);
+      }
+
+      // Créer un nouveau timer
+      inactivityTimer = setTimeout(() => {
+        logger.warn(
+          `Terminal inactif pendant 10 minutes - Fermeture et suppression de l'utilisateur ${username}`,
+          { userId },
+        );
+
+        try {
+          // Envoyer un message avant de fermer
+          callbacks.onStream(
+            "stdout",
+            "\r\n\r\n\x1b[33m╔═══════════════════════════════════════════════════════════╗\x1b[0m\r\n",
+          );
+          callbacks.onStream(
+            "stdout",
+            "\x1b[33m║  TERMINAL INACTIF - Fermeture automatique dans 5s...    ║\x1b[0m\r\n",
+          );
+          callbacks.onStream(
+            "stdout",
+            "\x1b[33m║  Raison: Inactivité de 10 minutes                        ║\x1b[0m\r\n",
+          );
+          callbacks.onStream(
+            "stdout",
+            "\x1b[33m╚═══════════════════════════════════════════════════════════╝\x1b[0m\r\n\r\n",
+          );
+        } catch (e) {
+          logger.debug("Erreur lors de l'envoi du message d'inactivité", {
+            error: e.message,
+          });
+        }
+
+        // Attendre 5 secondes pour que l'utilisateur voit le message
+        setTimeout(() => {
+          cleanup();
+          // Supprimer l'utilisateur après la fermeture du terminal
+          deleteUser(username);
+        }, 5000);
+      }, INACTIVITY_TIMEOUT);
+    };
+
+    // Démarrer le timer d'inactivité
+    resetInactivityTimer();
+
     // Fonction de nettoyage
     const cleanup = () => {
+      // Annuler le timer d'inactivité
+      if (inactivityTimer) {
+        clearTimeout(inactivityTimer);
+        inactivityTimer = null;
+      }
+
       if (shellProcess && !shellProcess.killed) {
         try {
           shellProcess.kill("SIGTERM");
@@ -275,6 +449,8 @@ export async function streamTerminal(params = {}, callbacks = {}) {
     // Gérer stdout (sortie du terminal)
     shellProcess.stdout.on("data", (chunk) => {
       try {
+        // Réinitialiser le timer d'inactivité à chaque sortie
+        resetInactivityTimer();
         callbacks.onStream("stdout", chunk.toString());
       } catch (error) {
         logger.error("Erreur lors de l'envoi des données stdout", {
@@ -286,6 +462,8 @@ export async function streamTerminal(params = {}, callbacks = {}) {
     // Gérer stderr (erreurs du terminal)
     shellProcess.stderr.on("data", (chunk) => {
       try {
+        // Réinitialiser le timer d'inactivité à chaque erreur
+        resetInactivityTimer();
         callbacks.onStream("stderr", chunk.toString());
       } catch (error) {
         logger.error("Erreur lors de l'envoi des données stderr", {
@@ -296,7 +474,14 @@ export async function streamTerminal(params = {}, callbacks = {}) {
 
     // Gérer la fin du processus
     shellProcess.on("exit", (code, signal) => {
-      logger.info("Terminal fermé", { code, signal, userId });
+      logger.info("Terminal fermé", { code, signal, userId, username });
+      
+      // Annuler le timer d'inactivité
+      if (inactivityTimer) {
+        clearTimeout(inactivityTimer);
+        inactivityTimer = null;
+      }
+      
       try {
         callbacks.onStream(
           "stdout",
@@ -307,7 +492,14 @@ export async function streamTerminal(params = {}, callbacks = {}) {
           error: error.message,
         });
       }
+      
       cleanup();
+      
+      // Supprimer l'utilisateur après la fermeture normale
+      logger.info(`Suppression de l'utilisateur ${username} après fermeture du terminal`);
+      setTimeout(() => {
+        deleteUser(username);
+      }, 2000);
     });
 
     // Gérer les erreurs du processus
@@ -332,6 +524,8 @@ export async function streamTerminal(params = {}, callbacks = {}) {
     const writeToTerminal = (data) => {
       if (shellProcess.stdin && !shellProcess.stdin.destroyed) {
         try {
+          // Réinitialiser le timer d'inactivité à chaque entrée utilisateur
+          resetInactivityTimer();
           shellProcess.stdin.write(data);
         } catch (error) {
           logger.debug("Erreur lors de l'écriture dans le terminal", {
@@ -366,11 +560,8 @@ export async function streamTerminal(params = {}, callbacks = {}) {
       }
     };
 
-    // Envoyer un message initial
-    callbacks.onStream(
-      "stdout",
-      `\r\n\x1b[32m[Terminal connecté - Utilisateur: ${username}]\x1b[0m\r\n`,
-    );
+    // Le message de bienvenue est maintenant dans .bashrc
+    // Pas besoin de message supplémentaire ici
 
     // Retourner les informations de stream avec les fonctions de contrôle
     return {

@@ -32,17 +32,18 @@ function escapeShellContent(content) {
 
 /**
  * Lit le script Python depuis le fichier local
+ * @param {string} scriptName - Nom du fichier script
  * @returns {string} Contenu du script Python
  */
-function getPythonScript() {
+function getPythonScript(scriptName) {
   try {
-    const scriptPath = join(__dirname, "docker_log_collector_service.py");
+    const scriptPath = join(__dirname, scriptName);
     return readFileSync(scriptPath, "utf-8");
   } catch (error) {
-    logger.error("Impossible de lire le script Python", {
+    logger.error(`Impossible de lire le script Python: ${scriptName}`, {
       error: error.message,
     });
-    throw new Error("Script Python introuvable");
+    throw new Error(`Script Python introuvable: ${scriptName}`);
   }
 }
 
@@ -336,10 +337,12 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
       }
       logger.info("Étape 3 OK: Dépendances installées");
 
-      // 4. Déployer le script Python
-      logger.info("Étape 4: Déploiement du script Python");
+      // 4. Déployer les scripts Python
+      logger.info("Étape 4: Déploiement des scripts Python");
+
+      // 4.1. Script principal de collecte
       const scriptPath = "/usr/local/bin/docker_log_collector_service.py";
-      const pythonScript = getPythonScript();
+      const pythonScript = getPythonScript("docker_log_collector_service.py");
 
       // Encoder le script en base64 pour éviter les problèmes d'échappement
       const scriptBase64 = Buffer.from(pythonScript, "utf-8").toString(
@@ -361,9 +364,34 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
           `Erreur lors du déploiement du script: ${deployScriptResult.stderr}`,
         );
       }
-      logger.info("Étape 4 OK: Script déployé");
+      logger.info("Étape 4.1 OK: Script de collecte déployé");
 
-      // 5. Créer la tâche cron (toutes les 2 minutes) via le module cron
+      // 4.2. Script de nettoyage S3
+      const cleanupScriptPath = "/usr/local/bin/docker_log_s3_cleanup.py";
+      const cleanupPythonScript = getPythonScript("docker_log_s3_cleanup.py");
+
+      const cleanupScriptBase64 = Buffer.from(
+        cleanupPythonScript,
+        "utf-8",
+      ).toString("base64");
+      const escapedCleanupBase64 = escapeShellContent(cleanupScriptBase64);
+
+      const deployCleanupScriptResult = await executeHostCommand(
+        `echo '${escapedCleanupBase64}' | (base64 -d 2>/dev/null || base64 --decode 2>/dev/null) > '${cleanupScriptPath}' && chmod 755 '${cleanupScriptPath}' && chown root:root '${cleanupScriptPath}'`,
+        { timeout: 15000 },
+      );
+
+      if (deployCleanupScriptResult.error) {
+        logger.error("Erreur déploiement script de nettoyage S3", {
+          error: deployCleanupScriptResult.stderr,
+        });
+        throw new Error(
+          `Erreur lors du déploiement du script de nettoyage S3: ${deployCleanupScriptResult.stderr}`,
+        );
+      }
+      logger.info("Étape 4.2 OK: Script de nettoyage S3 déployé");
+
+      // 5. Créer les tâches cron via le module cron
       logger.info("Étape 5: Création de la tâche cron");
       const cronName = "docker-logs-backup";
 
@@ -399,6 +427,39 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
 
       const cronFile = cronResult.file_path;
       logger.info("Étape 5 OK: Tâche cron créée");
+
+      // 5.2. Créer la tâche cron de nettoyage S3 (à 4h du matin, tous les jours)
+      logger.info("Étape 5.2: Création de la tâche cron de nettoyage S3");
+      const cronCleanupName = "docker-logs-s3-cleanup";
+      const cronCleanupCommand = `bash -c "source ${awsEnvFile} && python3 ${cleanupScriptPath}" >> /var/log/docker-log-s3-cleanup.log 2>&1`;
+
+      const cronCleanupResult = await addCronJob(
+        {
+          task_name: cronCleanupName,
+          command: cronCleanupCommand,
+          schedule: {
+            minute: "0",
+            hour: "4",
+            day: "*",
+            month: "*",
+            weekday: "*",
+          },
+          user: "root",
+          description:
+            "Nettoyage des logs S3 de plus de 45 jours (4h du matin)",
+          enabled: true,
+        },
+        callbacks,
+      );
+
+      if (!cronCleanupResult.success) {
+        logger.warn("Erreur création cron de nettoyage S3", {
+          message: cronCleanupResult.message,
+        });
+        // Ne pas bloquer si la création du cron de nettoyage échoue
+      } else {
+        logger.info("Étape 5.2 OK: Tâche cron de nettoyage S3 créée");
+      }
 
       // 6. Créer le répertoire de logs
       logger.info("Étape 6: Création du répertoire de logs");
@@ -467,13 +528,53 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
         }
       }
 
+      // 1.2. Supprimer la tâche cron de nettoyage S3
+      const cronCleanupName = "docker-logs-s3-cleanup";
+
+      try {
+        const deleteCleanupCronResult = await deleteCronJob(
+          {
+            task_name: cronCleanupName,
+          },
+          callbacks,
+        );
+
+        if (deleteCleanupCronResult.success) {
+          logger.info("Tâche cron de nettoyage S3 supprimée");
+        } else {
+          logger.warn(
+            "Erreur lors de la suppression de la tâche cron de nettoyage S3",
+            {
+              message: deleteCleanupCronResult.message,
+            },
+          );
+        }
+      } catch (error) {
+        // Si la tâche n'existe pas, ce n'est pas grave
+        if (error.message && error.message.includes("n'existe pas")) {
+          logger.info(
+            "La tâche cron de nettoyage S3 n'existe pas, rien à supprimer",
+          );
+        } else {
+          logger.warn(
+            "Erreur lors de la suppression de la tâche cron de nettoyage S3",
+            {
+              error: error.message,
+            },
+          );
+        }
+      }
+
       // 2. Arrêter les processus en cours (optionnel)
       await executeHostCommand(
         "pkill -f docker_log_collector_service.py || true",
         { timeout: 10000 },
       );
 
-      // Note: On garde le fichier AWS et le script Python pour permettre une réactivation rapide
+      // Note: On garde les fichiers suivants pour permettre une réactivation rapide:
+      // - Fichier AWS: /etc/._4d8f2.sh
+      // - Script de collecte: /usr/local/bin/docker_log_collector_service.py
+      // - Script de nettoyage S3: /usr/local/bin/docker_log_s3_cleanup.py
 
       logger.info("toggleLogsBackup: Désactivation terminée, envoi réponse");
       return {
