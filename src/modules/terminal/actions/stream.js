@@ -128,33 +128,21 @@ async function ensureLimitedUser(userEmail) {
 
       logger.info(`Utilisateur ${username} créé avec succès`);
     } else {
-      logger.debug(`Utilisateur ${username} existe déjà - Recréation pour mettre à jour la configuration`);
-
-      // Supprimer l'utilisateur existant pour le recréer avec la nouvelle config
-      await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- pkill -u ${username} -9 || true`,
-        { timeout: 5000 },
-      );
-      
-      await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- userdel -r ${username} 2>&1 || true`,
-        { timeout: 10000 },
+      logger.debug(
+        `Utilisateur ${username} existe déjà - Mise à jour de la configuration`,
       );
 
-      logger.info("Création du nouvel utilisateur avec configuration mise à jour");
-      
-      // Créer l'utilisateur avec un shell bash et un répertoire home
-      const createUserResult = await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- useradd -m -s /bin/bash -c "Devoups Terminal User" ${username} 2>&1`,
-        { timeout: 10000 },
+      // S'assurer que le répertoire home existe
+      const homeCheck = await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- test -d /home/${username} && echo "exists" || echo "missing"`,
+        { timeout: 3000 },
       );
 
-      if (
-        createUserResult.exitCode !== 0 &&
-        !createUserResult.stderr.includes("already exists")
-      ) {
-        logger.error(
-          `Erreur lors de la création de l'utilisateur: ${createUserResult.stderr || createUserResult.stdout}`,
+      if (homeCheck.stdout.trim() === "missing") {
+        logger.warn(`Répertoire home manquant pour ${username}, création...`);
+        await executeCommand(
+          `nsenter -t 1 -m -u -i -n -p -- mkdir -p /home/${username} && chown ${username}:${username} /home/${username} 2>&1`,
+          { timeout: 5000 },
         );
       }
     }
@@ -182,35 +170,40 @@ export PATH="/usr/bin:/bin"
 cd() {
   # Si pas d'argument, aller au home (comportement par défaut)
   if [ -z "\$1" ]; then
-    builtin cd /home/${username}
+    builtin cd ~ 2>/dev/null || builtin cd /home/${username}
     return \$?
   fi
   
   local target="\$1"
+  local current_dir=\$(pwd)
   
-  # Gérer les chemins relatifs et absolus
+  # Résoudre le chemin cible
   if [[ "\$target" = /* ]]; then
     # Chemin absolu
     local abs_path="\$target"
   else
-    # Chemin relatif - construire le chemin absolu
-    local current_dir=\$(pwd)
-    # Simplifier le chemin (enlever les ./ et ../)
-    abs_path="\$(cd "\$current_dir" && cd "\$target" 2>/dev/null && pwd || echo "invalid")"
+    # Chemin relatif - combiner avec le répertoire courant
+    if [ "\$target" = ".." ]; then
+      abs_path="\$(dirname "\$current_dir")"
+    elif [ "\$target" = "." ]; then
+      abs_path="\$current_dir"
+    else
+      abs_path="\$current_dir/\$target"
+    fi
   fi
   
-  # Vérifier si le chemin est dans le home
-  if [[ "\$abs_path" = "/home/${username}"* ]]; then
+  # Normaliser le chemin (enlever les doubles slashes)
+  abs_path="\$(echo "\$abs_path" | sed 's#//*#/#g')"
+  
+  # Vérifier si le chemin est dans le home ou EST le home
+  if [ "\$abs_path" = "/home/${username}" ] || [[ "\$abs_path" = "/home/${username}/"* ]]; then
     builtin cd "\$target"
     return \$?
   else
-    echo "Erreur: Vous ne pouvez naviguer que dans votre répertoire home"
+    echo "Erreur: Navigation autorisée uniquement dans /home/${username}"
     return 1
   fi
 }
-
-# Forcer le démarrage dans le répertoire HOME
-builtin cd /home/${username} 2>/dev/null
 
 # Désactiver certaines commandes dangereuses
 alias rm='echo "Commande rm désactivée. Utilisez: trash <fichier>"'
@@ -275,11 +268,15 @@ echo "  • Création de fichiers/dossiers autorisée"
 echo "  • Suppression: utilisez 'trash <fichier>' (uniquement vos fichiers)"
 echo "  • Exécution limitée aux fichiers que vous créez"
 echo ""
+echo "🐳 Accès Docker:"
+echo "  • Commandes docker disponibles (docker ps, docker logs, etc.)"
+echo "  • Gestion des containers autorisée"
+echo ""
 echo "⏱️  Timeout d'inactivité: 10 minutes"
 echo "   → Le terminal se fermera automatiquement après 10 min d'inactivité"
 echo "   → Votre compte utilisateur sera supprimé à la fermeture"
 echo ""
-echo "Commandes disponibles: ls, cat, echo, touch, mkdir, nano, vim, grep, etc."
+echo "Commandes disponibles: ls, cat, echo, touch, mkdir, nano, vim, grep, docker, etc."
 echo ""
 `;
 
@@ -326,11 +323,31 @@ PROFILE_EOF'`,
       { timeout: 5000 },
     );
 
-    // NE PAS ajouter l'utilisateur au groupe docker pour des raisons de sécurité
-    // Le groupe docker donne des privilèges équivalents à root
-    logger.info(
-      `Utilisateur ${username} configuré sans accès Docker (sécurité)`,
-    );
+    // Ajouter l'utilisateur au groupe docker
+    try {
+      const checkDockerGroup = await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- groups ${username} 2>/dev/null | grep -q docker && echo "in_docker" || echo "not_in_docker"`,
+        { timeout: 5000 },
+      );
+
+      if (checkDockerGroup.stdout.trim() === "not_in_docker") {
+        logger.info(`Ajout de l'utilisateur ${username} au groupe docker`);
+        await executeCommand(
+          `nsenter -t 1 -m -u -i -n -p -- usermod -aG docker ${username} 2>&1 || true`,
+          { timeout: 5000 },
+        );
+        logger.info(`Utilisateur ${username} ajouté au groupe docker`);
+      } else {
+        logger.debug(`Utilisateur ${username} est déjà dans le groupe docker`);
+      }
+    } catch (error) {
+      logger.warn(
+        "Erreur lors de l'ajout au groupe docker (le groupe docker peut ne pas exister)",
+        {
+          error: error.message,
+        },
+      );
+    }
 
     // Vérification finale que l'utilisateur existe avant de retourner
     const finalCheck = await executeCommand(
