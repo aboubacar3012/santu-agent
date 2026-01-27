@@ -46,15 +46,16 @@ async function ensureLimitedUser() {
 
       // Configurer les limites de ressources via /etc/security/limits.conf
       try {
-        // Limites de ressources (5GB disque, 2 CPU, 8GB RAM)
+        // Limites de ressources (5GB disque, 2 CPU max, 8GB RAM)
         // as = address space (RAM) en KB, donc 8GB = 8388608 KB
-        // nproc = nombre de processus (CPU), donc 2
+        // nproc = nombre de processus simultanés (50 pour permettre à bash de fonctionner)
         // fsize = taille max de fichier en KB, donc 5GB = 5242880 KB
+        // Note: Pour limiter à 2 CPU, on utilisera cgroups dans la commande shell
         const limitsConf = `\n# Limites pour ${username}
 ${username} hard as 8388608
 ${username} soft as 8388608
-${username} hard nproc 2
-${username} soft nproc 2
+${username} hard nproc 50
+${username} soft nproc 50
 ${username} hard fsize 5242880
 ${username} soft fsize 5242880
 ${username} hard nofile 1024
@@ -274,8 +275,15 @@ export async function streamTerminal(params = {}, callbacks = {}) {
     // script -q -c "bash" crée un shell interactif avec PTY
     // -q = quiet (pas de message de démarrage)
     // -c = commande à exécuter
+    // Limiter les CPU à 2 cœurs avec systemd-run si disponible
     // Changer vers le home et afficher le MOTD au démarrage
-    const shellCommand = `nsenter -t 1 -m -u -i -n -p -- su - ${username} -c "cd ~ && script -q -c 'bash --login' /dev/null"`;
+    const shellCommand = `nsenter -t 1 -m -u -i -n -p -- sh -c '
+      if command -v systemd-run >/dev/null 2>&1; then
+        systemd-run --user --scope --cpu-quota=200% -- su - ${username} -c "cd ~ && script -q -c '\''bash --login'\'' /dev/null"
+      else
+        su - ${username} -c "cd ~ && script -q -c '\''bash --login'\'' /dev/null"
+      fi
+    '`;
 
     const shellProcess = spawn("sh", ["-c", shellCommand], {
       stdio: ["pipe", "pipe", "pipe"],
