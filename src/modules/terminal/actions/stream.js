@@ -12,10 +12,36 @@ import { executeCommand } from "../../../shared/executor.js";
 
 /**
  * Crée un utilisateur limité pour le terminal si nécessaire
+ * @param {string} userEmail - Email de l'utilisateur connecté
  * @returns {Promise<string>} Nom d'utilisateur à utiliser
  */
-async function ensureLimitedUser() {
-  const username = "devoups-terminal";
+async function ensureLimitedUser(userEmail) {
+  // Générer le nom d'utilisateur à partir de l'email
+  // Prendre la partie avant le @, remplacer les points par des tirets
+  let username = "devoups-terminal"; // Valeur par défaut
+  
+  if (userEmail && typeof userEmail === "string" && userEmail.includes("@")) {
+    const localPart = userEmail.split("@")[0];
+    // Remplacer les points par des tirets et nettoyer les caractères spéciaux
+    username = localPart
+      .replace(/\./g, "-")
+      .replace(/[^a-z0-9-]/gi, "")
+      .toLowerCase();
+    
+    // S'assurer que le nom d'utilisateur est valide (commence par une lettre ou underscore)
+    if (!/^[a-z_]/.test(username)) {
+      username = "user-" + username;
+    }
+    
+    // Limiter la longueur du nom d'utilisateur (max 32 caractères pour Linux)
+    if (username.length > 32) {
+      username = username.substring(0, 32);
+    }
+    
+    logger.info(`Nom d'utilisateur généré depuis l'email: ${username}`);
+  } else {
+    logger.warn("Email invalide ou manquant, utilisation du nom par défaut");
+  }
   
   try {
     // Vérifier si l'utilisateur existe déjà
@@ -41,8 +67,13 @@ async function ensureLimitedUser() {
       });
 
       // Vérifier si la création a réussi
-      if (createUserResult.exitCode !== 0 && !createUserResult.stderr.includes("already exists")) {
-        logger.error(`Erreur lors de la création de l'utilisateur: ${createUserResult.stderr || createUserResult.stdout}`);
+      if (
+        createUserResult.exitCode !== 0 &&
+        !createUserResult.stderr.includes("already exists")
+      ) {
+        logger.error(
+          `Erreur lors de la création de l'utilisateur: ${createUserResult.stderr || createUserResult.stdout}`,
+        );
       }
 
       // Vérifier que l'utilisateur existe maintenant
@@ -64,13 +95,13 @@ async function ensureLimitedUser() {
       logger.info(`Utilisateur ${username} créé avec succès`);
     } else {
       logger.debug(`Utilisateur ${username} existe déjà`);
-      
+
       // Vérifier que le répertoire home existe
       const homeCheck = await executeCommand(
         `nsenter -t 1 -m -u -i -n -p -- test -d /home/${username} && echo "exists" || echo "missing"`,
         { timeout: 3000 },
       );
-      
+
       if (homeCheck.stdout.trim() === "missing") {
         logger.warn(`Répertoire home manquant pour ${username}, création...`);
         await executeCommand(
@@ -85,100 +116,16 @@ async function ensureLimitedUser() {
       `nsenter -t 1 -m -u -i -n -p -- test -d /home/${username} && echo "exists" || echo "missing"`,
       { timeout: 3000 },
     );
-    
+
     if (finalHomeCheck.stdout.trim() === "missing") {
-      logger.error(`Répertoire home /home/${username} n'existe pas, impossible de continuer`);
+      logger.error(
+        `Répertoire home /home/${username} n'existe pas, impossible de continuer`,
+      );
       throw new Error(`Répertoire home manquant pour ${username}`);
     }
 
-    // Créer un .bashrc personnalisé pour afficher le MOTD au démarrage
+    // Créer un .bashrc personnalisé simple sans MOTD
     const bashrcContent = `# Configuration Devoups Terminal User
-
-# Afficher le MOTD au démarrage (une seule fois par session)
-if [ -z "\${MOTD_SHOWN}" ]; then
-  export MOTD_SHOWN=1
-  
-  # Afficher le MOTD directement
-  echo ""
-  echo -e "\\x1b[1;32m"
-  echo "╔══════════════════════════════════════════════════════════════╗"
-  echo "║                                                              ║"
-  echo "║   ██████╗ ███████╗██╗   ██╗ ██████╗ ██╗   ██╗██████╗ ███████╗ ║"
-  echo "║   ██╔══██╗██╔════╝██║   ██║██╔═══██╗██║   ██║██╔══██╗██╔════╝ ║"
-  echo "║   ██║  ██║█████╗  ██║   ██║██║   ██║██║   ██║██████╔╝███████╗ ║"
-  echo "║   ██║  ██║██╔══╝  ╚██╗ ██╔╝██║   ██║██║   ██║██╔═══╝ ╚════██║ ║"
-  echo "║   ██████╔╝███████╗ ╚████╔╝ ╚██████╔╝╚██████╔╝██║     ███████║ ║"
-  echo "║   ╚═════╝ ╚══════╝  ╚═══╝   ╚═════╝  ╚═════╝ ╚═╝     ╚══════╝ ║"
-  echo "║                                                              ║"
-  echo -e "║              \\x1b[1;36mDON'T PANIC - Terminal Ready\\x1b[1;32m                  ║"
-  echo "╚══════════════════════════════════════════════════════════════╝"
-  echo -e "\\x1b[0m"
-  echo ""
-  echo -e "\\x1b[1;33m┌─ System Information ─────────────────────────────────────────┐\\x1b[0m"
-  
-  # Date
-  DATE_INFO="N/A"
-  if command -v date >/dev/null 2>&1; then
-    DATE_INFO=\$(date '+%A, %d %B %Y, %I:%M:%S %p' 2>/dev/null || date 2>/dev/null || echo "N/A")
-  fi
-  echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mDate.............:\\x1b[0m \\x1b[32m\${DATE_INFO}\\x1b[0m"
-  
-  # Uptime
-  UPTIME_INFO="N/A"
-  if command -v uptime >/dev/null 2>&1; then
-    UPTIME_INFO=\$(uptime -p 2>/dev/null || uptime 2>/dev/null | awk '{print \$3,\$4}' | sed 's/,//' || echo "N/A")
-  fi
-  echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mUptime..........:\\x1b[0m \\x1b[32m\${UPTIME_INFO}\\x1b[0m"
-  
-  # Disk Space
-  DISK_USED="N/A"
-  DISK_FREE="N/A"
-  if command -v df >/dev/null 2>&1; then
-    DISK_USED=\$(df -h / 2>/dev/null | awk 'NR==2 {print \$3}' || echo "N/A")
-    DISK_FREE=\$(df -h / 2>/dev/null | awk 'NR==2 {print \$4}' || echo "N/A")
-  fi
-  echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mDisk Space......:\\x1b[0m \\x1b[32mUsed: \${DISK_USED}, Free: \${DISK_FREE}\\x1b[0m"
-  
-  # Memory
-  MEM_USED="N/A"
-  MEM_FREE="N/A"
-  if command -v free >/dev/null 2>&1; then
-    MEM_USED=\$(free -h 2>/dev/null | awk '/^Mem:/ {print \$3}' || echo "N/A")
-    MEM_FREE=\$(free -h 2>/dev/null | awk '/^Mem:/ {print \$4}' || echo "N/A")
-  fi
-  echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mMemory..........:\\x1b[0m \\x1b[32mUsed: \${MEM_USED}, Free: \${MEM_FREE}\\x1b[0m"
-  
-  # Load Averages
-  LOAD_AVG="N/A"
-  if command -v uptime >/dev/null 2>&1; then
-    LOAD_AVG=\$(uptime 2>/dev/null | awk -F'load average:' '{print \$2}' | sed 's/^ *//' || echo "N/A")
-  fi
-  echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mLoad Averages...:\\x1b[0m \\x1b[32m\${LOAD_AVG}\\x1b[0m"
-  
-  # Running Processes
-  PROC_COUNT="N/A"
-  if command -v ps >/dev/null 2>&1; then
-    PROC_COUNT=\$(ps aux 2>/dev/null | wc -l | awk '{print \$1-1}' || echo "N/A")
-  fi
-  echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mRunning Processes:\\x1b[0m \\x1b[32m\${PROC_COUNT}\\x1b[0m"
-  
-  # User
-  echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mUser.............:\\x1b[0m \\x1b[32m${username}\\x1b[0m"
-  
-  echo -e "\\x1b[1;33m└────────────────────────────────────────────────────────────────┘\\x1b[0m"
-  echo ""
-  echo -e "\\x1b[1;31m⚠  Restrictions:\\x1b[0m"
-  echo -e "   \\x1b[33m• Pas d'accès root (sudo et su désactivés)\\x1b[0m"
-  echo ""
-  echo -e "\\x1b[1;36m💡 Tip: Tapez 'help' pour voir les commandes disponibles\\x1b[0m"
-  echo ""
-  echo -e "\\x1b[1;32m═══════════════════════════════════════════════════════════════\\x1b[0m"
-  echo ""
-fi
-
-# Empêcher l'accès root
-alias sudo="echo -e '\\x1b[31mCommande sudo désactivée - pas d\\x27accès root\\x1b[0m'"
-alias su="echo -e '\\x1b[31mCommande su désactivée - pas d\\x27accès root\\x1b[0m'"
 
 # Couleurs pour ls
 alias ls='ls --color=auto'
@@ -193,23 +140,9 @@ BASHRC_EOF'`,
       { timeout: 5000 },
     );
 
-    // Créer un .bash_profile qui charge .bashrc (nécessaire pour les login shells)
-    const bashProfileContent = `# Load .bashrc if it exists
-if [ -f "$HOME/.bashrc" ]; then
-  source "$HOME/.bashrc"
-fi
-`;
-
-    await executeCommand(
-      `nsenter -t 1 -m -u -i -n -p -- sh -c 'cat > /home/${username}/.bash_profile << 'PROFILE_EOF'
-${bashProfileContent}
-PROFILE_EOF'`,
-      { timeout: 5000 },
-    );
-
     // Définir les permissions appropriées
     await executeCommand(
-      `nsenter -t 1 -m -u -i -n -p -- chown ${username}:${username} /home/${username}/.bashrc /home/${username}/.bash_profile 2>&1 || true`,
+      `nsenter -t 1 -m -u -i -n -p -- chown ${username}:${username} /home/${username}/.bashrc 2>&1 || true`,
       { timeout: 5000 },
     );
 
@@ -246,7 +179,9 @@ PROFILE_EOF'`,
     );
 
     if (finalCheck.stdout.trim() === "not_found") {
-      throw new Error(`L'utilisateur ${username} n'existe pas après la création`);
+      throw new Error(
+        `L'utilisateur ${username} n'existe pas après la création`,
+      );
     }
 
     return username;
@@ -284,7 +219,7 @@ export async function streamTerminal(params = {}, callbacks = {}) {
     );
 
     const validatedParams = validateTerminalParams("stream", params);
-    const { cols, rows } = validatedParams;
+    const { cols, rows, userEmail } = validatedParams;
 
     if (!callbacks.onStream) {
       throw new Error(
@@ -299,7 +234,7 @@ export async function streamTerminal(params = {}, callbacks = {}) {
     });
 
     // Créer ou récupérer l'utilisateur limité
-    const username = await ensureLimitedUser();
+    const username = await ensureLimitedUser(userEmail);
 
     // Créer un processus shell interactif via nsenter
     // Utiliser script pour créer un PTY interactif avec un shell bash

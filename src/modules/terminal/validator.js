@@ -58,6 +58,9 @@ export function validateParams(action, params) {
       // cols et rows sont optionnels, avec des valeurs par défaut
       const cols = params.cols && typeof params.cols === "number" ? params.cols : 80;
       const rows = params.rows && typeof params.rows === "number" ? params.rows : 24;
+      
+      // userEmail est optionnel
+      const userEmail = params.userEmail && typeof params.userEmail === "string" ? params.userEmail : "";
 
       // Vérifier que cols et rows sont des valeurs raisonnables
       if (cols < 10 || cols > 500) {
@@ -70,6 +73,7 @@ export function validateParams(action, params) {
       return {
         cols,
         rows,
+        userEmail,
       };
     }
     default:
