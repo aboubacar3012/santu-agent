@@ -12,11 +12,8 @@ import { executeCommand } from "../../../shared/executor.js";
 
 /**
  * Crée un utilisateur limité pour le terminal si nécessaire
- * Limites appliquées :
- * - Accès uniquement au répertoire home
- * - 5GB d'espace disque maximum
- * - 2 CPU maximum
- * - 8GB RAM maximum
+ * Restrictions appliquées :
+ * - Pas d'accès root (sudo, su désactivés)
  * @returns {Promise<string>} Nom d'utilisateur à utiliser
  */
 async function ensureLimitedUser() {
@@ -44,97 +41,9 @@ async function ensureLimitedUser() {
         { timeout: 5000 },
       );
 
-      // Configurer les limites de ressources via /etc/security/limits.conf
-      try {
-        // Limites de ressources (5GB disque, 2 CPU max, 8GB RAM)
-        // as = address space (RAM) en KB, donc 8GB = 8388608 KB
-        // nproc = nombre de processus simultanés (50 pour permettre à bash de fonctionner)
-        // fsize = taille max de fichier en KB, donc 5GB = 5242880 KB
-        // Note: Pour limiter à 2 CPU, on utilisera cgroups dans la commande shell
-        const limitsConf = `\n# Limites pour ${username}
-${username} hard as 8388608
-${username} soft as 8388608
-${username} hard nproc 50
-${username} soft nproc 50
-${username} hard fsize 5242880
-${username} soft fsize 5242880
-${username} hard nofile 1024
-${username} soft nofile 1024
-`;
-
-        await executeCommand(
-          `nsenter -t 1 -m -u -i -n -p -- sh -c 'echo "${limitsConf}" >> /etc/security/limits.conf' 2>&1 || true`,
-          { timeout: 5000 },
-        );
-
-        // Configurer les quotas de disque (5GB) si les quotas sont activés
-        try {
-          // Vérifier si les quotas sont activés
-          const quotaCheck = await executeCommand(
-            `nsenter -t 1 -m -u -i -n -p -- quotaon -a 2>&1 || echo "quota_not_enabled"`,
-            { timeout: 3000 },
-          );
-
-          if (!quotaCheck.stdout.includes("quota_not_enabled")) {
-            // Définir le quota utilisateur à 5GB (en blocs de 1KB)
-            // 5GB = 5242880 KB
-            await executeCommand(
-              `nsenter -t 1 -m -u -i -n -p -- setquota -u ${username} 5242880 5242880 0 0 / 2>&1 || true`,
-              { timeout: 5000 },
-            );
-            logger.info(`Quota de disque configuré pour ${username} (5GB)`);
-          }
-        } catch (quotaError) {
-          logger.debug(
-            "Les quotas de disque ne sont pas disponibles, utilisation des limites de fichiers uniquement",
-            {
-              error: quotaError.message,
-            },
-          );
-        }
-
-        logger.info(`Limites de ressources configurées pour ${username}`);
-      } catch (error) {
-        logger.warn(
-          "Erreur lors de la configuration des limites de ressources",
-          {
-            error: error.message,
-          },
-        );
-      }
-
-      // Créer un .bashrc personnalisé pour limiter l'accès au home uniquement
+      // Créer un .bashrc personnalisé pour empêcher l'accès root
       const bashrcContent = [
         "# Configuration Devoups Temp User",
-        "# Accès limité au répertoire home uniquement",
-        "",
-        "# Empêcher la navigation en dehors du home",
-        "cd() {",
-        '  local target="${1:-~}"',
-        "  local resolved_path",
-        "  ",
-        "  # Résoudre le chemin absolu",
-        '  if [[ "$target" =~ ^/ ]]; then',
-        '    resolved_path="$target"',
-        "  else",
-        '    resolved_path="$(pwd)/$target"',
-        "  fi",
-        '  resolved_path="$(readlink -f "$resolved_path" 2>/dev/null || echo "$resolved_path")"',
-        "  ",
-        `  # Vérifier que le chemin est dans le home de l'utilisateur`,
-        `  if [[ ! "$resolved_path" =~ ^/home/${username}(/|$) ]]; then`,
-        '    echo "Accès refusé: vous ne pouvez accéder qu à votre répertoire home (/home/' +
-          username +
-          ')"',
-        "    return 1",
-        "  fi",
-        "  ",
-        '  builtin cd "$target"',
-        "}",
-        "",
-        "# Limiter PATH",
-        'export PATH="$HOME/bin:$HOME/.local/bin:/usr/bin:/bin"',
-        'export HOME="$HOME"',
         "",
         "# Afficher le MOTD au démarrage",
         'if [ -f "$HOME/.motd" ] && [ -z "$MOTD_SHOWN" ]; then',
@@ -142,17 +51,9 @@ ${username} soft nofile 1024
         "  export MOTD_SHOWN=1",
         "fi",
         "",
-        "# Alias pour empêcher certaines commandes dangereuses",
-        'alias rm="rm -i"',
-        'alias mv="mv -i"',
-        'alias cp="cp -i"',
-        'alias chmod="echo Commande désactivée"',
-        'alias chown="echo Commande désactivée"',
-        'alias sudo="echo Commande sudo désactivée"',
-        'alias su="echo Commande su désactivée"',
-        "",
-        "# Forcer le répertoire home au démarrage",
-        "cd ~",
+        "# Empêcher l'accès root",
+        'alias sudo="echo Commande sudo désactivée - pas d accès root"',
+        'alias su="echo Commande su désactivée - pas d accès root"',
       ].join("\n");
 
       // Créer le fichier .bashrc en utilisant printf pour gérer les caractères spéciaux
@@ -171,20 +72,9 @@ BASHRC_EOF'`,
         "╚══════════════════════════════════════════════════════════════╝",
         "",
         `👤 Utilisateur: ${username}`,
-        "📁 Accès: Répertoire home uniquement (~)",
-        "💾 Espace disque: 5 GB maximum",
-        "⚡ CPU: 2 cœurs maximum",
-        "🧠 RAM: 8 GB maximum",
-        "",
-        "📋 Commandes disponibles:",
-        "   - Navigation dans votre répertoire home",
-        "   - Commandes système de base (ls, cat, grep, etc.)",
-        "   - Édition de fichiers dans votre home",
         "",
         "🚫 Restrictions:",
-        "   - Accès uniquement à votre répertoire home",
-        "   - Pas d accès root ou sudo",
-        "   - Pas d accès aux répertoires système",
+        "   - Pas d accès root (sudo et su désactivés)",
         "",
         "Pour plus d informations, contactez l administrateur système.",
         "",
@@ -203,12 +93,6 @@ MOTD_EOF'`,
       // Définir les permissions appropriées
       await executeCommand(
         `nsenter -t 1 -m -u -i -n -p -- chown ${username}:${username} /home/${username}/.bashrc /home/${username}/.motd 2>&1 || true`,
-        { timeout: 5000 },
-      );
-
-      // Changer le répertoire home en répertoire par défaut au login
-      await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- sh -c 'echo "cd ~" >> /home/${username}/.bash_profile' 2>&1 || true`,
         { timeout: 5000 },
       );
 
@@ -275,15 +159,7 @@ export async function streamTerminal(params = {}, callbacks = {}) {
     // script -q -c "bash" crée un shell interactif avec PTY
     // -q = quiet (pas de message de démarrage)
     // -c = commande à exécuter
-    // Limiter les CPU à 2 cœurs avec systemd-run si disponible
-    // Changer vers le home et afficher le MOTD au démarrage
-    const shellCommand = `nsenter -t 1 -m -u -i -n -p -- sh -c '
-      if command -v systemd-run >/dev/null 2>&1; then
-        systemd-run --user --scope --cpu-quota=200% -- su - ${username} -c "cd ~ && script -q -c '\''bash --login'\'' /dev/null"
-      else
-        su - ${username} -c "cd ~ && script -q -c '\''bash --login'\'' /dev/null"
-      fi
-    '`;
+    const shellCommand = `nsenter -t 1 -m -u -i -n -p -- su - ${username} -c "script -q -c 'bash --login' /dev/null"`;
 
     const shellProcess = spawn("sh", ["-c", shellCommand], {
       stdio: ["pipe", "pipe", "pipe"],
