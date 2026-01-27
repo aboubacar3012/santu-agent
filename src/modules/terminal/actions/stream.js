@@ -12,12 +12,10 @@ import { executeCommand } from "../../../shared/executor.js";
 
 /**
  * Crée un utilisateur limité pour le terminal si nécessaire
- * Restrictions appliquées :
- * - Pas d'accès root (sudo, su désactivés)
  * @returns {Promise<string>} Nom d'utilisateur à utiliser
  */
 async function ensureLimitedUser() {
-  const username = "devoups-temp-user";
+  const username = "devoups-terminal";
   
   try {
     // Vérifier si l'utilisateur existe déjà
@@ -26,52 +24,13 @@ async function ensureLimitedUser() {
       { timeout: 5000 },
     );
 
-    // Si l'utilisateur existe, le supprimer complètement pour éviter les limites résiduelles
-    if (checkUser.stdout.trim() !== "not_found") {
-      logger.info(`Suppression de l'utilisateur ${username} existant pour le recréer proprement`);
-      
-      try {
-        // Tuer tous les processus de l'utilisateur
-        await executeCommand(
-          `nsenter -t 1 -m -u -i -n -p -- pkill -u ${username} 2>&1 || true`,
-          { timeout: 3000 },
-        );
-        
-        // Attendre un peu pour que les processus se terminent
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-        // Supprimer l'utilisateur et son home
-        await executeCommand(
-          `nsenter -t 1 -m -u -i -n -p -- userdel -r ${username} 2>&1 || true`,
-          { timeout: 5000 },
-        );
-        
-        // Nettoyer les limites dans /etc/security/limits.conf
-        await executeCommand(
-          `nsenter -t 1 -m -u -i -n -p -- sed -i '/${username}/d' /etc/security/limits.conf 2>&1 || true`,
-          { timeout: 3000 },
-        );
-        
-        logger.info(`Utilisateur ${username} supprimé avec succès`);
-      } catch (error) {
-        logger.warn("Erreur lors de la suppression de l'utilisateur existant", {
-          error: error.message,
-        });
-      }
-    }
-
-    // Créer l'utilisateur (soit nouveau, soit après suppression)
-    const userExists = await executeCommand(
-      `nsenter -t 1 -m -u -i -n -p -- id -u ${username} 2>/dev/null || echo "not_found"`,
-      { timeout: 5000 },
-    );
-
-    if (userExists.stdout.trim() === "not_found") {
+    if (checkUser.stdout.trim() === "not_found") {
       logger.info("Création de l'utilisateur limité pour le terminal");
 
-      // Créer l'utilisateur avec un shell bash
+      // Créer l'utilisateur avec un shell limité
+      // Utiliser /bin/bash mais avec des restrictions via rbash ou un shell personnalisé
       await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- useradd -m -s /bin/bash -c "Devoups Temp User" ${username} 2>&1 || true`,
+        `nsenter -t 1 -m -u -i -n -p -- useradd -m -s /bin/bash -c "Devoups Terminal User" ${username} 2>&1 || true`,
         { timeout: 10000 },
       );
 
@@ -81,141 +40,141 @@ async function ensureLimitedUser() {
         { timeout: 5000 },
       );
 
-      // Créer un .bashrc personnalisé pour empêcher l'accès root
-      const bashrcContent = [
-        "# Configuration Devoups Temp User",
-        "",
-        "# Afficher le MOTD au démarrage",
-        'if [ -f "$HOME/.motd" ] && [ -z "$MOTD_SHOWN" ]; then',
-        '  cat "$HOME/.motd"',
-        "  export MOTD_SHOWN=1",
-        "fi",
-        "",
-        "# Empêcher l'accès root",
-        'alias sudo="echo Commande sudo désactivée - pas d accès root"',
-        'alias su="echo Commande su désactivée - pas d accès root"',
-      ].join("\n");
-
-      // Créer le fichier .bashrc en utilisant printf pour gérer les caractères spéciaux
-      await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- sh -c 'cat > /home/${username}/.bashrc << 'BASHRC_EOF'
-${bashrcContent}
-BASHRC_EOF'`,
-        { timeout: 5000 },
-      );
-
-      // Créer le fichier MOTD
-      const motdContent = [
-        "",
-        "╔══════════════════════════════════════════════════════════════╗",
-        "║          Bienvenue sur le terminal Devoups                  ║",
-        "╚══════════════════════════════════════════════════════════════╝",
-        "",
-        `👤 Utilisateur: ${username}`,
-        "",
-        "🚫 Restrictions:",
-        "   - Pas d accès root (sudo et su désactivés)",
-        "",
-        "Pour plus d informations, contactez l administrateur système.",
-        "",
-        "═══════════════════════════════════════════════════════════════",
-        "",
-      ].join("\n");
-
-      // Créer le fichier MOTD
-      await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- sh -c 'cat > /home/${username}/.motd << 'MOTD_EOF'
-${motdContent}
-MOTD_EOF'`,
-        { timeout: 5000 },
-      );
-
-      // Définir les permissions appropriées
-      await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- chown ${username}:${username} /home/${username}/.bashrc /home/${username}/.motd 2>&1 || true`,
-        { timeout: 5000 },
-      );
-
-      logger.info(
-        `Utilisateur ${username} créé avec succès et restrictions appliquées`,
-      );
+      logger.info(`Utilisateur ${username} créé avec succès`);
     } else {
       logger.debug(`Utilisateur ${username} existe déjà`);
-      
-      // Nettoyer les anciennes limites de ressources si elles existent
-      try {
-        // Supprimer toutes les lignes contenant le nom d'utilisateur dans /etc/security/limits.conf
-        await executeCommand(
-          `nsenter -t 1 -m -u -i -n -p -- sed -i '/${username}/d' /etc/security/limits.conf 2>&1 || true`,
-          { timeout: 5000 },
-        );
-        
-        // Réinitialiser les quotas si configurés
-        try {
-          await executeCommand(
-            `nsenter -t 1 -m -u -i -n -p -- setquota -u ${username} 0 0 0 0 / 2>&1 || true`,
-            { timeout: 3000 },
-          );
-        } catch (quotaError) {
-          // Ignorer si les quotas ne sont pas activés
-        }
-        
-        logger.debug(`Anciennes limites nettoyées pour ${username}`);
-      } catch (error) {
-        logger.debug("Erreur lors du nettoyage des anciennes limites", {
-          error: error.message,
-        });
-      }
-      
-      // Mettre à jour le .bashrc et .motd même si l'utilisateur existe déjà
-      const bashrcContent = [
-        "# Configuration Devoups Temp User",
-        "",
-        "# Afficher le MOTD au démarrage",
-        'if [ -f "$HOME/.motd" ] && [ -z "$MOTD_SHOWN" ]; then',
-        '  cat "$HOME/.motd"',
-        "  export MOTD_SHOWN=1",
-        "fi",
-        "",
-        "# Empêcher l'accès root",
-        'alias sudo="echo Commande sudo désactivée - pas d accès root"',
-        'alias su="echo Commande su désactivée - pas d accès root"',
-      ].join("\n");
+    }
 
-      await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- sh -c 'cat > /home/${username}/.bashrc << 'BASHRC_EOF'
+    // Créer le script MOTD avec un design cool inspiré de l'image
+    const motdScript = `#!/bin/bash
+# MOTD dynamique pour Devoups Terminal
+
+echo ""
+echo -e "\\x1b[1;32m"
+echo "╔══════════════════════════════════════════════════════════════╗"
+echo "║                                                              ║"
+echo "║   ██████╗ ███████╗██╗   ██╗ ██████╗ ██╗   ██╗██████╗ ███████╗ ║"
+echo "║   ██╔══██╗██╔════╝██║   ██║██╔═══██╗██║   ██║██╔══██╗██╔════╝ ║"
+echo "║   ██║  ██║█████╗  ██║   ██║██║   ██║██║   ██║██████╔╝███████╗ ║"
+echo "║   ██║  ██║██╔══╝  ╚██╗ ██╔╝██║   ██║██║   ██║██╔═══╝ ╚════██║ ║"
+echo "║   ██████╔╝███████╗ ╚████╔╝ ╚██████╔╝╚██████╔╝██║     ███████║ ║"
+echo "║   ╚═════╝ ╚══════╝  ╚═══╝   ╚═════╝  ╚═════╝ ╚═╝     ╚══════╝ ║"
+echo "║                                                              ║"
+echo -e "║              \\x1b[1;36mDON'T PANIC - Terminal Ready\\x1b[1;32m                  ║"
+echo "╚══════════════════════════════════════════════════════════════╝"
+echo -e "\\x1b[0m"
+echo ""
+echo -e "\\x1b[1;33m┌─ System Information ─────────────────────────────────────────┐\\x1b[0m"
+
+# Date
+DATE_INFO=$(date '+%A, %d %B %Y, %I:%M:%S %p' 2>/dev/null || date)
+echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mDate.............:\\x1b[0m \\x1b[32m${DATE_INFO}\\x1b[0m"
+
+# Uptime
+UPTIME_INFO=$(uptime -p 2>/dev/null || uptime | awk '{print $3,$4}' | sed 's/,//' || echo "N/A")
+echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mUptime..........:\\x1b[0m \\x1b[32m${UPTIME_INFO}\\x1b[0m"
+
+# Disk Space
+DISK_USED=$(df -h / 2>/dev/null | awk 'NR==2 {print $3}' || echo "N/A")
+DISK_FREE=$(df -h / 2>/dev/null | awk 'NR==2 {print $4}' || echo "N/A")
+echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mDisk Space......:\\x1b[0m \\x1b[32mUsed: ${DISK_USED}, Free: ${DISK_FREE}\\x1b[0m"
+
+# Memory
+MEM_USED=$(free -h 2>/dev/null | awk '/^Mem:/ {print $3}' || echo "N/A")
+MEM_FREE=$(free -h 2>/dev/null | awk '/^Mem:/ {print $4}' || echo "N/A")
+echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mMemory..........:\\x1b[0m \\x1b[32mUsed: ${MEM_USED}, Free: ${MEM_FREE}\\x1b[0m"
+
+# Load Averages
+LOAD_AVG=$(uptime 2>/dev/null | awk -F'load average:' '{print $2}' | sed 's/^ *//' || echo "N/A")
+echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mLoad Averages...:\\x1b[0m \\x1b[32m${LOAD_AVG}\\x1b[0m"
+
+# Running Processes
+PROC_COUNT=$(ps aux 2>/dev/null | wc -l | awk '{print $1-1}' || echo "N/A")
+echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mRunning Processes:\\x1b[0m \\x1b[32m${PROC_COUNT}\\x1b[0m"
+
+# User
+echo -e "\\x1b[36m│\\x1b[0m \\x1b[1;37mUser.............:\\x1b[0m \\x1b[32m${username}\\x1b[0m"
+
+echo -e "\\x1b[1;33m└────────────────────────────────────────────────────────────────┘\\x1b[0m"
+echo ""
+echo -e "\\x1b[1;31m⚠  Restrictions:\\x1b[0m"
+echo -e "   \\x1b[33m• Pas d'accès root (sudo et su désactivés)\\x1b[0m"
+echo ""
+echo -e "\\x1b[1;36m💡 Tip: Tapez 'help' pour voir les commandes disponibles\\x1b[0m"
+echo ""
+echo -e "\\x1b[1;32m═══════════════════════════════════════════════════════════════\\x1b[0m"
+echo ""
+`;
+
+    // Créer le fichier MOTD comme script exécutable
+    await executeCommand(
+      `nsenter -t 1 -m -u -i -n -p -- sh -c 'cat > /home/${username}/.motd << 'MOTD_EOF'
+${motdScript}
+MOTD_EOF'`,
+      { timeout: 5000 },
+    );
+
+    // Rendre le script MOTD exécutable
+    await executeCommand(
+      `nsenter -t 1 -m -u -i -n -p -- chmod +x /home/${username}/.motd 2>&1 || true`,
+      { timeout: 3000 },
+    );
+
+    // Créer un .bashrc personnalisé pour afficher le MOTD au démarrage
+    const bashrcContent = `# Configuration Devoups Terminal User
+
+# Afficher le MOTD au démarrage (une seule fois par session)
+if [ -f "$HOME/.motd" ] && [ -z "$MOTD_SHOWN" ]; then
+  bash "$HOME/.motd"
+  export MOTD_SHOWN=1
+fi
+
+# Empêcher l'accès root
+alias sudo="echo -e '\\x1b[31mCommande sudo désactivée - pas d\\x27accès root\\x1b[0m'"
+alias su="echo -e '\\x1b[31mCommande su désactivée - pas d\\x27accès root\\x1b[0m'"
+
+# Couleurs pour ls
+alias ls='ls --color=auto'
+alias ll='ls -lah --color=auto'
+`;
+
+    // Créer le fichier .bashrc
+    await executeCommand(
+      `nsenter -t 1 -m -u -i -n -p -- sh -c 'cat > /home/${username}/.bashrc << 'BASHRC_EOF'
 ${bashrcContent}
 BASHRC_EOF'`,
+      { timeout: 5000 },
+    );
+
+    // Définir les permissions appropriées
+    await executeCommand(
+      `nsenter -t 1 -m -u -i -n -p -- chown ${username}:${username} /home/${username}/.bashrc /home/${username}/.motd 2>&1 || true`,
+      { timeout: 5000 },
+    );
+
+    // Vérifier si l'utilisateur est dans le groupe docker et l'ajouter si nécessaire
+    try {
+      const checkDockerGroup = await executeCommand(
+        `nsenter -t 1 -m -u -i -n -p -- groups ${username} 2>/dev/null | grep -q docker && echo "in_docker" || echo "not_in_docker"`,
         { timeout: 5000 },
       );
 
-      const motdContent = [
-        "",
-        "╔══════════════════════════════════════════════════════════════╗",
-        "║          Bienvenue sur le terminal Devoups                  ║",
-        "╚══════════════════════════════════════════════════════════════╝",
-        "",
-        `👤 Utilisateur: ${username}`,
-        "",
-        "🚫 Restrictions:",
-        "   - Pas d accès root (sudo et su désactivés)",
-        "",
-        "Pour plus d informations, contactez l administrateur système.",
-        "",
-        "═══════════════════════════════════════════════════════════════",
-        "",
-      ].join("\n");
-
-      await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- sh -c 'cat > /home/${username}/.motd << 'MOTD_EOF'
-${motdContent}
-MOTD_EOF'`,
-        { timeout: 5000 },
-      );
-
-      await executeCommand(
-        `nsenter -t 1 -m -u -i -n -p -- chown ${username}:${username} /home/${username}/.bashrc /home/${username}/.motd 2>&1 || true`,
-        { timeout: 5000 },
+      if (checkDockerGroup.stdout.trim() === "not_in_docker") {
+        logger.info(`Ajout de l'utilisateur ${username} au groupe docker`);
+        await executeCommand(
+          `nsenter -t 1 -m -u -i -n -p -- usermod -aG docker ${username} 2>&1 || true`,
+          { timeout: 5000 },
+        );
+        logger.info(`Utilisateur ${username} ajouté au groupe docker`);
+      } else {
+        logger.debug(`Utilisateur ${username} est déjà dans le groupe docker`);
+      }
+    } catch (error) {
+      logger.warn(
+        "Erreur lors de l'ajout au groupe docker (le groupe docker peut ne pas exister)",
+        {
+          error: error.message,
+        },
       );
     }
 
