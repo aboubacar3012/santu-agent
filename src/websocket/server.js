@@ -6,6 +6,12 @@ import { createError } from "../shared/messages.js";
 import { verifyToken } from "./auth.js";
 import { executeCommand } from "../shared/executor.js";
 import { validateHostnameConsistency } from "../modules/metadata/actions/utils.js";
+import {
+  getCachedMetricsLast30Minutes,
+  getCachedMetricsLast1Hour,
+  getCachedMetricsLast12Hours,
+  getCachedMetricsLast24h,
+} from "../shared/redis.js";
 
 const DEFAULT_HEALTHCHECK_PATH = "/healthcheck";
 
@@ -103,7 +109,7 @@ export async function createFrontendServer({
   });
 
   server.on("request", (req, res) => {
-    handleHttpRequest(req, res, normalizedHealthcheckPath);
+    handleHttpRequest(req, res, normalizedHealthcheckPath, hostname, serverIp);
   });
 
   /**
@@ -603,7 +609,7 @@ function normalizeHealthcheckPath(pathname) {
   return pathname.startsWith("/") ? pathname : `/${pathname}`;
 }
 
-function handleHttpRequest(req, res, healthcheckPath) {
+async function handleHttpRequest(req, res, healthcheckPath, hostname, serverIp) {
   // Laisser les requêtes d'upgrade WebSocket être gérées par ws.
   if (req.headers.upgrade) {
     return;
@@ -624,6 +630,97 @@ function handleHttpRequest(req, res, healthcheckPath) {
     return;
   }
 
+  // Gérer l'endpoint de métriques
+  if (requestUrl.pathname === "/api/metrics") {
+    if (req.method !== "GET") {
+      res.writeHead(405, {
+        "Content-Type": "application/json",
+        Allow: "GET",
+      });
+      res.end(JSON.stringify({ status: "error", message: "Method Not Allowed" }));
+      return;
+    }
+
+    // Vérifier le token depuis la query string
+    const token = requestUrl.searchParams.get("token");
+    if (!token) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "error", message: "Token requis" }));
+      return;
+    }
+
+    try {
+      // Vérifier le token (similaire à la vérification WebSocket)
+      if (!hostname || !serverIp) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "error", message: "Configuration serveur invalide" }));
+        return;
+      }
+
+      const verificationResult = verifyToken(token, hostname, serverIp);
+      if (!verificationResult.valid) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "error", message: verificationResult.error || "Token invalide" }));
+        return;
+      }
+
+      // Récupérer le paramètre de période depuis la query string
+      const period = requestUrl.searchParams.get("period") || "24h";
+      
+      // Récupérer les métriques depuis Redis selon la période demandée
+      let cachedMetrics = [];
+      switch (period) {
+        case "30m":
+          cachedMetrics = await getCachedMetricsLast30Minutes("metrics:system");
+          break;
+        case "1h":
+          cachedMetrics = await getCachedMetricsLast1Hour("metrics:system");
+          break;
+        case "12h":
+          cachedMetrics = await getCachedMetricsLast12Hours("metrics:system");
+          break;
+        case "24h":
+        default:
+          cachedMetrics = await getCachedMetricsLast24h("metrics:system");
+          break;
+      }
+      
+      // Transformer les métriques pour correspondre au format attendu par le frontend
+      const transformedMetrics = cachedMetrics.map((entry) => {
+        const metric = entry.metric || {};
+        return {
+          timestamp: metric.timestamp || new Date(entry.timestamp).toISOString(),
+          hostname: metric.hostname || "unknown",
+          ...metric.metrics, // Aplatir les métriques au niveau racine
+        };
+      });
+
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          metrics: transformedMetrics,
+        })
+      );
+    } catch (error) {
+      logger.error("Erreur lors de la récupération des métriques", {
+        error: error.message,
+      });
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          status: "error",
+          message: "Erreur lors de la récupération des métriques",
+        })
+      );
+    }
+    return;
+  }
+
+  // Gérer le healthcheck
   if (requestUrl.pathname !== healthcheckPath) {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "error", message: "Not Found" }));

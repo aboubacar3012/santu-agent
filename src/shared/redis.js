@@ -638,6 +638,321 @@ export async function getCachedActivityEventsLast7Days(
 }
 
 /**
+ * Génère un hash simple pour une métrique (pour éviter les doublons)
+ * @param {Object} metric - Métrique système
+ * @returns {string} Hash de la métrique
+ */
+function hashMetric(metric) {
+  if (!metric || typeof metric !== "object") {
+    return "";
+  }
+
+  // Utiliser timestamp + hostname comme identifiant unique
+  const keyParts = [
+    metric.timestamp || Date.now(),
+    metric.hostname || "unknown",
+  ];
+
+  return keyParts.join("|");
+}
+
+/**
+ * Stocke une métrique système dans Redis avec un TTL de 24h
+ * @param {string} key - Clé Redis (ex: "metrics:system:2025-12-10")
+ * @param {Object} metric - Métrique à stocker
+ * @param {number} ttlSeconds - TTL en secondes (défaut: 24h = 86400)
+ * @param {number} maxMetrics - Nombre maximum de métriques à garder par jour (défaut: 8640 = 24h avec collecte toutes les 10s)
+ * @returns {Promise<boolean>} True si stocké avec succès, false sinon
+ */
+export async function storeMetric(
+  key,
+  metric,
+  ttlSeconds = 86400, // 24h
+  maxMetrics = 8640 // 24h * 60min * 60sec / 10sec = 8640 métriques max
+) {
+  try {
+    const client = await getRedisClient();
+    if (!client) {
+      return false; // Redis non disponible, continuer sans cache
+    }
+
+    // Générer un identifiant unique pour cette métrique (pour éviter les doublons)
+    const metricHash = hashMetric(metric);
+    const metricId = `metric:${Buffer.from(metricHash)
+      .toString("base64")
+      .substring(0, 50)}`;
+
+    // Utiliser un Set Redis pour stocker les IDs des métriques déjà stockées (déduplication)
+    const seenKey = `${key}:seen`;
+    const isSeen = await client.sIsMember(seenKey, metricId);
+
+    if (isSeen) {
+      // Métrique déjà stockée, ne pas la stocker à nouveau
+      logger.debug("Métrique déjà en cache, ignorée", {
+        key,
+        metricId: metricId.substring(0, 20),
+      });
+      return true; // Retourner true car la métrique existe déjà
+    }
+
+    // Utiliser une liste Redis pour stocker les métriques (LPUSH pour ajouter au début)
+    // Chaque élément de la liste est un JSON avec timestamp et metric
+    const metricEntry = JSON.stringify({
+      timestamp: metric.timestamp
+        ? new Date(metric.timestamp).getTime()
+        : Date.now(),
+      metric,
+      id: metricId, // Ajouter l'ID pour faciliter la déduplication
+    });
+
+    // Ajouter la métrique au début de la liste
+    await client.lPush(key, metricEntry);
+
+    // Marquer cette métrique comme vue dans le Set
+    await client.sAdd(seenKey, metricId);
+
+    // Limiter la taille de la liste pour éviter qu'elle ne devienne trop grande
+    // On garde les N dernières métriques (les plus récentes sont au début avec lPush)
+    if (maxMetrics > 0) {
+      await client.lTrim(key, 0, maxMetrics - 1);
+
+      // Nettoyer le Set des IDs vus pour éviter qu'il ne devienne trop grand
+      // On garde seulement les IDs des métriques qui sont encore dans la liste
+      const listLength = await client.lLen(key);
+      if (listLength > 0) {
+        const metrics = await client.lRange(key, 0, listLength - 1);
+        const currentIds = new Set();
+        metrics.forEach((entry) => {
+          try {
+            const parsed = JSON.parse(entry);
+            if (parsed.id) {
+              currentIds.add(parsed.id);
+            }
+          } catch (error) {
+            // Ignorer les erreurs de parsing
+          }
+        });
+
+        // Récupérer tous les IDs du Set et supprimer ceux qui ne sont plus dans la liste
+        const allSeenIds = await client.sMembers(seenKey);
+        const idsToRemove = allSeenIds.filter((id) => !currentIds.has(id));
+        if (idsToRemove.length > 0) {
+          await client.sRem(seenKey, idsToRemove);
+        }
+      }
+    }
+
+    // Définir le TTL sur la clé et le Set
+    await client.expire(key, ttlSeconds);
+    await client.expire(seenKey, ttlSeconds);
+
+    return true;
+  } catch (error) {
+    logger.warn("Erreur lors du stockage d'une métrique dans Redis", {
+      error: error.message,
+      key,
+    });
+    return false;
+  }
+}
+
+/**
+ * Récupère les métriques en cache depuis Redis
+ * @param {string} key - Clé Redis (ex: "metrics:system:2025-12-10")
+ * @param {number} limit - Nombre maximum de métriques à récupérer (défaut: 8640)
+ * @returns {Promise<Array<{timestamp: number, metric: Object}>>} Liste des métriques en cache (du plus ancien au plus récent)
+ */
+export async function getCachedMetrics(key, limit = 8640) {
+  try {
+    const client = await getRedisClient();
+    if (!client) {
+      return []; // Redis non disponible, retourner un tableau vide
+    }
+
+    // Récupérer la longueur de la liste
+    const listLength = await client.lLen(key);
+    if (listLength === 0) {
+      return [];
+    }
+
+    // Avec lPush, les plus récents sont au début (index 0)
+    // Pour avoir du plus ancien au plus récent, on récupère les N derniers éléments
+    // et on les inverse
+    const startIndex = Math.max(0, listLength - limit);
+    const metrics = await client.lRange(key, startIndex, -1);
+
+    // Inverser l'ordre car lPush ajoute au début, donc les plus anciens sont à la fin
+    metrics.reverse();
+
+    // Parser chaque entrée JSON
+    const parsedMetrics = metrics
+      .map((entry) => {
+        try {
+          return JSON.parse(entry);
+        } catch (error) {
+          logger.debug("Erreur lors du parsing d'une métrique en cache", {
+            error: error.message,
+          });
+          return null;
+        }
+      })
+      .filter((entry) => entry !== null);
+
+    return parsedMetrics;
+  } catch (error) {
+    logger.warn("Erreur lors de la récupération des métriques en cache", {
+      error: error.message,
+      key,
+    });
+    return [];
+  }
+}
+
+/**
+ * Récupère les métriques en cache pour une période spécifiée depuis Redis
+ * @param {string} prefix - Préfixe de la clé (ex: "metrics:system")
+ * @param {number} hoursBack - Nombre d'heures en arrière (ex: 0.5 pour 30min, 1 pour 1h, 12 pour 12h, 24 pour 24h)
+ * @param {number} limitPerDay - Nombre maximum de métriques par jour (défaut: 8640)
+ * @returns {Promise<Array<{timestamp: number, metric: Object}>>} Liste des métriques en cache (du plus ancien au plus récent)
+ */
+export async function getCachedMetricsForPeriod(
+  prefix,
+  hoursBack,
+  limitPerDay = 8640
+) {
+  try {
+    const client = await getRedisClient();
+    if (!client) {
+      return [];
+    }
+
+    const now = Date.now();
+    const cutoffTime = now - hoursBack * 60 * 60 * 1000;
+
+    // Déterminer combien de jours nous devons récupérer
+    // Si hoursBack <= 24, on a besoin d'aujourd'hui et peut-être d'hier
+    const today = new Date(now);
+    const keys = [];
+    const metricsPromises = [];
+
+    // Si on demande moins de 24h, on récupère seulement aujourd'hui
+    if (hoursBack <= 24) {
+      const todayKey = generateLogKey(prefix, today);
+      keys.push(todayKey);
+      metricsPromises.push(getCachedMetrics(todayKey, limitPerDay));
+
+      // Si la période dépasse minuit, on récupère aussi hier
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayKey = generateLogKey(prefix, yesterday);
+      keys.push(yesterdayKey);
+      metricsPromises.push(getCachedMetrics(yesterdayKey, limitPerDay));
+    } else {
+      // Pour plus de 24h, récupérer plusieurs jours
+      const daysNeeded = Math.ceil(hoursBack / 24);
+      for (let i = 0; i <= daysNeeded; i++) {
+        const date = new Date(today);
+        date.setDate(date.getDate() - i);
+        const key = generateLogKey(prefix, date);
+        keys.push(key);
+        metricsPromises.push(getCachedMetrics(key, limitPerDay));
+      }
+    }
+
+    // Récupérer toutes les métriques en parallèle
+    const allMetricsArrays = await Promise.all(metricsPromises);
+
+    logger.debug("Récupération des métriques en cache", {
+      prefix,
+      hoursBack,
+      keys,
+      counts: allMetricsArrays.map((arr) => arr.length),
+    });
+
+    // Aplatir et filtrer par timestamp
+    const allMetrics = allMetricsArrays
+      .flat()
+      .filter((entry) => entry.timestamp >= cutoffTime);
+
+    // Dédupliquer les métriques basées sur leur ID (si présent) ou leur hash
+    const seenIds = new Set();
+    const deduplicatedMetrics = allMetrics.filter((entry) => {
+      // Utiliser l'ID si présent, sinon utiliser le hash de la métrique
+      const metricId = entry.id || hashMetric(entry.metric || {});
+      if (seenIds.has(metricId)) {
+        return false; // Doublon, ignorer
+      }
+      seenIds.add(metricId);
+      return true;
+    });
+
+    // Trier par timestamp (du plus ancien au plus récent)
+    deduplicatedMetrics.sort((a, b) => a.timestamp - b.timestamp);
+
+    logger.debug("Métriques en cache récupérées et dédupliquées", {
+      prefix,
+      hoursBack,
+      totalBeforeDedup: allMetrics.length,
+      totalAfterDedup: deduplicatedMetrics.length,
+      duplicatesRemoved: allMetrics.length - deduplicatedMetrics.length,
+    });
+
+    return deduplicatedMetrics;
+  } catch (error) {
+    logger.warn(
+      "Erreur lors de la récupération des métriques pour la période",
+      {
+        error: error.message,
+        prefix,
+        hoursBack,
+        stack: error.stack,
+      }
+    );
+    return [];
+  }
+}
+
+/**
+ * Récupère les métriques en cache des dernières 30 minutes depuis Redis
+ * @param {string} prefix - Préfixe de la clé (ex: "metrics:system")
+ * @param {number} limitPerDay - Nombre maximum de métriques par jour (défaut: 8640)
+ * @returns {Promise<Array<{timestamp: number, metric: Object}>>} Liste des métriques en cache (du plus ancien au plus récent)
+ */
+export async function getCachedMetricsLast30Minutes(prefix, limitPerDay = 8640) {
+  return getCachedMetricsForPeriod(prefix, 0.5, limitPerDay);
+}
+
+/**
+ * Récupère les métriques en cache de la dernière heure depuis Redis
+ * @param {string} prefix - Préfixe de la clé (ex: "metrics:system")
+ * @param {number} limitPerDay - Nombre maximum de métriques par jour (défaut: 8640)
+ * @returns {Promise<Array<{timestamp: number, metric: Object}>>} Liste des métriques en cache (du plus ancien au plus récent)
+ */
+export async function getCachedMetricsLast1Hour(prefix, limitPerDay = 8640) {
+  return getCachedMetricsForPeriod(prefix, 1, limitPerDay);
+}
+
+/**
+ * Récupère les métriques en cache des dernières 12h depuis Redis
+ * @param {string} prefix - Préfixe de la clé (ex: "metrics:system")
+ * @param {number} limitPerDay - Nombre maximum de métriques par jour (défaut: 8640)
+ * @returns {Promise<Array<{timestamp: number, metric: Object}>>} Liste des métriques en cache (du plus ancien au plus récent)
+ */
+export async function getCachedMetricsLast12Hours(prefix, limitPerDay = 8640) {
+  return getCachedMetricsForPeriod(prefix, 12, limitPerDay);
+}
+
+/**
+ * Récupère les métriques en cache des dernières 24h depuis Redis
+ * @param {string} prefix - Préfixe de la clé (ex: "metrics:system")
+ * @param {number} limitPerDay - Nombre maximum de métriques par jour (défaut: 8640)
+ * @returns {Promise<Array<{timestamp: number, metric: Object}>>} Liste des métriques en cache (du plus ancien au plus récent)
+ */
+export async function getCachedMetricsLast24h(prefix, limitPerDay = 8640) {
+  return getCachedMetricsForPeriod(prefix, 24, limitPerDay);
+}
+
+/**
  * Ferme la connexion Redis proprement
  * @returns {Promise<void>}
  */

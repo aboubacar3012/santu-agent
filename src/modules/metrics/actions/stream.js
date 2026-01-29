@@ -8,6 +8,10 @@ import { logger } from "../../../shared/logger.js";
 import { validateMetricsParams } from "../validator.js";
 import { executeCommand } from "../../../shared/executor.js";
 import { requireRole } from "../../../websocket/auth.js";
+import {
+  storeMetric,
+  generateLogKey,
+} from "../../../shared/redis.js";
 
 /**
  * Convertit une valeur en float de manière sûre
@@ -409,6 +413,24 @@ export async function streamMetrics(params = {}, callbacks = {}) {
     const cleanupFunctions = [];
     let isRunning = true;
 
+    // Fonction pour mettre à jour la clé Redis (appelée au démarrage et chaque jour)
+    const updateMetricsKey = () => {
+      const newKey = generateLogKey("metrics:system");
+      return newKey;
+    };
+
+    // Initialiser la clé
+    let currentMetricsKey = updateMetricsKey();
+
+    // Mettre à jour la clé toutes les heures pour s'assurer qu'on utilise la bonne clé du jour
+    const keyUpdateInterval = setInterval(() => {
+      currentMetricsKey = updateMetricsKey();
+    }, 60 * 60 * 1000); // Toutes les heures
+
+    cleanupFunctions.push(() => {
+      clearInterval(keyUpdateInterval);
+    });
+
     const collectInterval = setInterval(async () => {
       if (!isRunning) {
         return;
@@ -416,7 +438,16 @@ export async function streamMetrics(params = {}, callbacks = {}) {
 
       try {
         const metrics = await collectAllMetrics();
+        
+        // Envoyer les métriques en streaming
         callbacks.onStream("metrics", JSON.stringify(metrics));
+        
+        // Stocker les métriques dans Redis (en arrière-plan, ne pas bloquer)
+        const metricsKey = updateMetricsKey();
+        storeMetric(metricsKey, metrics).catch((error) => {
+          // Erreurs de stockage Redis sont déjà loggées dans storeMetric
+          // On continue même en cas d'erreur Redis
+        });
       } catch (error) {
         logger.error("Erreur lors de la collecte des métriques", {
           error: error.message,
@@ -432,6 +463,13 @@ export async function streamMetrics(params = {}, callbacks = {}) {
     try {
       const initialMetrics = await collectAllMetrics();
       callbacks.onStream("metrics", JSON.stringify(initialMetrics));
+      
+      // Stocker la métrique initiale dans Redis
+      const metricsKey = updateMetricsKey();
+      storeMetric(metricsKey, initialMetrics).catch((error) => {
+        // Erreurs de stockage Redis sont déjà loggées dans storeMetric
+        // On continue même en cas d'erreur Redis
+      });
     } catch (error) {
       logger.error("Erreur lors de la collecte initiale", {
         error: error.message,
