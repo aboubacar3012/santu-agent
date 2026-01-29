@@ -458,65 +458,28 @@ class DockerLogCollectorService:
 
 
 def main():
-    """Point d'entrée principal"""
+    """Point d'entrée principal - Mode one-shot pour exécution via cron"""
     service = DockerLogCollectorService()
     
-    # Mode normal : collecte et upload en continu
-    # Intervalles en secondes
-    COLLECT_INTERVAL = 2 * 60  # 2 minutes
-    UPLOAD_INTERVAL = 1 * 3600  # 1 heure
-    
-    # Timestamps de la dernière exécution
-    last_collect_time = 0
-    last_upload_time = 0
-    
-    # Première collecte immédiate
-    logger.info("Première collecte immédiate...")
-    service.collect_docker_logs()
-    last_collect_time = time.time()
-    
-    # Boucle principale
     try:
-        while True:
-            current_time = time.time()
+        # Mode one-shot : collecte les logs de la dernière heure et upload immédiatement
+        logger.info("Début de la collecte des logs (dernière heure)...")
+        collected_logs = service.collect_docker_logs()
+        
+        if collected_logs:
+            logger.info(f"Collecte terminée. {len(collected_logs)} fichiers collectés.")
             
-            # Collecte toutes les 2 minutes
-            if current_time - last_collect_time >= COLLECT_INTERVAL:
-                try:
-                    logger.info("Début de la collecte des logs...")
-                    service.collect_docker_logs()
-                    last_collect_time = current_time
-                    logger.info("Collecte terminée.")
-                except Exception as e:
-                    logger.error(f"Erreur lors de la collecte: {e}")
+            # Upload immédiatement vers S3
+            logger.info("Début de l'upload des logs vers S3...")
+            service.upload_to_s3(collected_logs)
+            service.cleanup_old_logs()
+            logger.info("Upload terminé avec succès.")
+        else:
+            logger.info("Aucun log récent à collecter ou uploader.")
             
-            # Upload toutes les 1 heure
-            if current_time - last_upload_time >= UPLOAD_INTERVAL:
-                try:
-                    logger.info("Début de l'upload des logs vers S3...")
-                    log_files = []
-                    if service.log_base_dir.exists():
-                        for log_file in service.log_base_dir.rglob("*_all.log"):
-                            log_files.append(str(log_file))
-                        for log_file in service.log_base_dir.rglob("*_errors.log"):
-                            log_files.append(str(log_file))
-                    
-                    if log_files:
-                        service.upload_to_s3(log_files)
-                        service.cleanup_old_logs()
-                    else:
-                        logger.info("Aucun fichier de log à uploader.")
-                    
-                    last_upload_time = current_time
-                    logger.info("Upload terminé.")
-                except Exception as e:
-                    logger.error(f"Erreur lors de l'upload: {e}")
-            
-            # Attendre 30 secondes avant de vérifier à nouveau
-            time.sleep(30)
-            
-    except KeyboardInterrupt:
-        logger.info("Arrêt du service demandé par l'utilisateur")
+    except Exception as e:
+        logger.error(f"Erreur lors de l'exécution: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

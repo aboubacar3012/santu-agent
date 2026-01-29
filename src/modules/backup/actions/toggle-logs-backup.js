@@ -405,7 +405,7 @@ export AWS_LOGS_BUCKET="${awsLogsBucket}"
           task_name: cronName,
           command: cronCommand,
           schedule: {
-            minute: "*/2",
+            minute: "0",
             hour: "*",
             day: "*",
             month: "*",
